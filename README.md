@@ -9,17 +9,6 @@ It does with the owner's own sign-in what the owner otherwise does by hand: sign
 in, open Open Work Orders, click **Available** to reload the calendar, look at this
 month and next month, open an opening and click **Accept**.
 
-## Status
-
-| Day | Feature | State |
-|---|---|---|
-| Oct 5 | Sign-in; read this month and next month | Done, tested on the local mock |
-| Oct 6 | New-opening detection; email alerts | Done, tested on the local mock |
-| Oct 7 | Auto-accept; test mode (finds Accept, doesn't click) | Done, tested on the local mock |
-| Oct 8 | Fit the reader to the live Elisa page | Next |
-| Oct 9 | On/off switch; send from the client's email account | |
-| Oct 10 | Server set-up, running around the clock | |
-
 The Accept step is based on the Elisa phone app (an Accept button per work order).
 The desktop version hasn't been seen on the live site yet, so keep `TEST_MODE=true`
 on the real site until it has.
