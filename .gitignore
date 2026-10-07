@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+build/
+dist/
+.pytest_cache/
+
+# Local configuration and secrets: never commit these
+.env
+*.env.local
+secrets/
+
+# Runtime data (state, logs)
+data/
+
+# Oct 7 work (auto-accept + test mode), held back for now
+/src/elisa_bot/site/applier.py
+/tests/test_applier.py
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elisa-bot"
+version = "0.1.0"
+description = "Watches the Elisa Open Work Orders calendar for the account owner, accepts new openings and emails an alert."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "playwright==1.63.0",
+  "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev =["pytest>=8", "pytest-asyncio>=0.23", "fastapi>=0.115", "uvicorn>=0.30"]
+
+[project.scripts]
+elisa-bot = "elisa_bot.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["browser: launches headless Chromium against the local mock Elisa site"]
