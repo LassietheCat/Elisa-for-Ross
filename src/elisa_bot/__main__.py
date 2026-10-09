@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .config import ConfigError, Settings
 from .cycle import CycleReport, run_check, run_once
+from .livecheck import SiteCheckReport, run_site_check
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
 from .notify import build_notifier, test_message
@@ -21,6 +22,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-file", default=".env", help="settings file (default: .env)")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("check", help="sign in and show what this month and next month look like (read-only)")
+    sub.add_parser(
+        "site-check",
+        help="read-only check that the reader fits the live page: structure, both months, cross-check with the site's data",
+    )
     once = sub.add_parser("once", help="one full run: read, find new openings, accept, alert")
     mode = once.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="really click Accept (overrides TEST_MODE)")
@@ -55,6 +60,33 @@ def _print_report(report: CycleReport, settings: Settings) -> None:
         print(f"[{mode}] {slot.label()}: skipped (already booked then)")
 
 
+def _print_site_check(report: SiteCheckReport) -> None:
+    print("Elisa site check (read-only)")
+    width = max((len(step.name) for step in report.steps), default=0)
+    for step in report.steps:
+        mark = "OK  " if step.ok else "FAIL"
+        print(f"  {mark} {step.name.ljust(width)}  {step.detail}".rstrip())
+    openings = sorted(set(report.openings))
+    print("Openings showing: " + (", ".join(slot.label() for slot in openings) if openings else "none"))
+    if report.mismatches:
+        print("Differences between the calendar and the site's data:")
+        for line in report.mismatches[:30]:
+            print(f"  - {line}")
+        if len(report.mismatches) > 30:
+            print(f"  ... and {len(report.mismatches) - 30} more")
+    for warning in report.warnings:
+        print(f"Note: {warning}")
+    if report.diagnostics:
+        print("Diagnostics at the failing step:")
+        for key, value in report.diagnostics.items():
+            print(f"  {key}: {value}")
+    if report.http_errors:
+        print("The site answered these requests with an error:")
+        for line in report.http_errors[:20]:
+            print(f"  {line}")
+    print("Result: the reader fits the live page." if report.ok else "Result: something needs fixing (see above).")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -82,6 +114,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "check":
             _print_slots(asyncio.run(run_check(settings, selectors)))
+        elif args.command == "site-check":
+            report = asyncio.run(run_site_check(settings, selectors))
+            _print_site_check(report)
+            return 0 if report.ok else 1
         else:
             _print_report(asyncio.run(run_once(settings, selectors)), settings)
         return 0

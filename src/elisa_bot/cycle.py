@@ -50,6 +50,7 @@ async def run_check(settings: Settings, selectors: Selectors, *, now: Clock | No
         await reader.refresh()
         return await reader.read_months(target_months(clock().date()))
     finally:
+        await session.logout()
         await session.close()
 
 
@@ -98,6 +99,7 @@ async def run_once(
         raise
     finally:
         if own_session:
+            await session.logout()
             await session.close()
 
     retry = _retry_next_time(report.results, state, settings)

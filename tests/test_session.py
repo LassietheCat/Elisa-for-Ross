@@ -39,6 +39,14 @@ async def test_verification_step_stops_the_run(mock, session):
         await session.ensure_ready()
 
 
+async def test_signs_out_through_the_user_menu(mock, session):
+    assert await session.logout() is False
+    await session.ensure_ready()
+    assert await session.logout() is True
+    assert "/login" in session.page.url
+    assert mock.stats()["logouts"] == 1
+
+
 async def test_signs_in_again_after_the_site_logs_it_out(mock, session):
     await session.ensure_ready()
     mock.expire_sessions()

@@ -26,17 +26,38 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 
 ```bash
 .venv/bin/python -m elisa_bot check            # sign in, show both months (read-only: clicks nothing)
+.venv/bin/python -m elisa_bot site-check       # read-only: does the reader fit the live page? (see below)
 .venv/bin/python -m elisa_bot once             # one full run (test mode unless TEST_MODE=false)
 .venv/bin/python -m elisa_bot once --live      # one full run that really clicks Accept
 .venv/bin/python -m elisa_bot test-email       # send a test alert
 .venv/bin/python -m elisa_bot reset-state --yes
 ```
 
-`once` signs in every time it runs, so don't schedule it every 15 seconds. The
-always-on loop arrives with the on/off switch (Oct 9) and keeps one session open.
+`check`, `site-check` and `once` each sign in, then sign out at the end, so don't
+schedule `once` every 15 seconds. The always-on loop arrives with the on/off switch
+(Oct 9) and keeps one session open.
 
-Exit codes: `0` ok, `1` run failed, `2` configuration error, `3` the site rejected
-the sign-in (not retried; fix the credentials first).
+Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
+configuration error, `3` the site rejected the sign-in (not retried; fix the
+credentials first).
+
+### site-check
+
+A read-only check that the reader fits the live Elisa page. It signs in, opens Open
+Work Orders, reloads with **Available**, reads this month and next month, then signs
+out. It never opens an opening or clicks Accept. It reports:
+
+- each step: sign-in, the tab, the four status filter buttons, whether a reload's
+  loading state was seen, and both months, with every day's AM and PM blocks found;
+- a **cross-check**: the calendar page itself asks the site for the owner's jobs per
+  day (Applied / Assigned / Confirmed, AM and PM). The check compares that with what
+  the reader saw, half-day by half-day, and lists any difference;
+- notes: tag words the reader doesn't recognise (in case an opening is labelled
+  differently than expected), and the site's own open-work-order count when it
+  differs from the calendar.
+
+If something doesn't fit, adjust `site/selectors.py` (or a `SELECTORS_FILE`) and run
+it again.
 
 ## What one run does
 
