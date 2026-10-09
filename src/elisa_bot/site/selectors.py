@@ -25,18 +25,27 @@ class Selectors:
     verification_re: str = r"(captcha|verification code|one[- ]time|two[- ]factor|2fa|enter the code)"
 
     open_work_orders_tab: str = 'a:visible:text-is("Open Work Orders")'
-    status_button: str = "button:has(span.small-view-btn)"
+    status_button: str = (
+        'button:has(span.small-view-btn:text-is("Available")), '
+        'button:has(span.small-view-btn:text-is("Applied")), '
+        'button:has(span.small-view-btn:text-is("Assigned")), '
+        'button:has(span.small-view-btn:text-is("Confirm"))'
+    )
     available_filter: str = 'button:has(span.small-view-btn:text-is("Available"))'
+    user_menu: str = ".navbar-fixed-top .dropdown-toggle, .navbar-fixed-top [data-toggle=dropdown]"
+    logout_re: str = r"^\s*(log\s*out|logout|sign\s*out)\s*$"
 
     month_title: str = ".calender-monyh-header"
-    next_month: str = ".header i.fa-angle-right"
-    prev_month: str = ".header i.fa-angle-left"
+    next_month: str = ".header:has(.calender-monyh-header) .fa-angle-right"
+    prev_month: str = ".header:has(.calender-monyh-header) .fa-angle-left"
     day_cell: str = "td.calendar-day"
     date_cell: str = ".date-cell"
     day_number: str = ".date"
     half_badge: str = ".time-slab-badge"
     tag: str = "span.badge:not(.time-slab-badge)"
     status_words: dict[str, str] = field(default_factory=lambda: dict(_STATUS_WORDS))
+    schedule_api: str = "/interpreter-scheduled"
+    counts_api: str = "/get-open-work-order-count1"
 
     dialog: str = ".modal.show, .modal.in, [role=dialog]"
     dialog_buttons: str = "button, a.btn, input[type=button], input[type=submit]"

@@ -13,7 +13,8 @@ from .pages import DASHBOARD_HTML, LOGIN_HTML
 MOCK_EMAIL = "interpreter@example.test"
 MOCK_PASSWORD = "mock-password-123"
 SESSION_COOKIE = "mock_session"
-SHOWN_STATUSES = ("available", "applied", "assigned", "confirmed")
+SHOWN_STATUSES = ("available", "applied", "assigned", "confirmed", "cancelled")
+SCHEDULE_NAMES = {"applied": "Applied", "assigned": "Assigned", "confirmed": "Confirmed"}
 HOLIDAYS = {
     "2026-09-07": "Labor Day",
     "2026-10-12": "Columbus Day",
@@ -34,6 +35,7 @@ DEFAULT_CONFIG = {
     "accept_result_status": "applied",
     "confirm_dialog": False,
     "button_label": "Accept",
+    "schedule_drift": False,
 }
 
 
@@ -47,7 +49,14 @@ class MockState:
             self.config = dict(DEFAULT_CONFIG)
             self.work_orders: list[dict] = []
             self.sessions: set[str] = set()
-            self.stats = {"login_attempts": 0, "logins_ok": 0, "calendar_fetches": 0, "details_opened": 0, "accept_calls": []}
+            self.stats = {
+                "login_attempts": 0,
+                "logins_ok": 0,
+                "logouts": 0,
+                "calendar_fetches": 0,
+                "details_opened": 0,
+                "accept_calls": [],
+            }
 
     def set_work_orders(self, items: list[dict]) -> None:
         with self.lock:
@@ -91,6 +100,48 @@ def create_app(state: MockState) -> FastAPI:
         response = JSONResponse({"ok": True})
         response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax")
         return response
+
+    @app.post("/api/logout")
+    async def logout(request: Request):
+        with state.lock:
+            state.sessions.discard(request.cookies.get(SESSION_COOKIE))
+            state.stats["logouts"] += 1
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(SESSION_COOKIE)
+        return response
+
+    def in_range(body: dict, key: str) -> tuple[str, str]:
+        window = body.get(key) or {}
+        return str(window.get("startDate", "")), str(window.get("endDate", ""))
+
+    @app.post("/api/open-work-orders/{client}/interpreter-scheduled")
+    async def interpreter_scheduled(request: Request, client: str):
+        if not signed_in(request):
+            return unauthorized()
+        start, end = in_range(await request.json(), "filterBy")
+        await asyncio.sleep(state.config["loading_delay_ms"] / 2000)
+        result: dict = {}
+        with state.lock:
+            for wo in state.work_orders:
+                name = SCHEDULE_NAMES.get(wo["status"])
+                if name and start <= wo["date"] <= end:
+                    halves = result.setdefault(wo["date"], {}).setdefault(name, {"am": 0, "pm": 0})
+                    halves[wo["half"].lower()] += 1
+            if state.config["schedule_drift"]:
+                result.setdefault(start[:8] + "20", {})["Assigned"] = {"am": 1, "pm": 0}
+        return {"status": True, "result": result}
+
+    @app.post("/api/open-work-orders/{client}/get-open-work-order-count1")
+    async def open_work_order_count(request: Request, client: str):
+        if not signed_in(request):
+            return unauthorized()
+        start, end = in_range(await request.json(), "filter")
+        await asyncio.sleep(state.config["loading_delay_ms"] / 2000)
+        with state.lock:
+            in_window = [wo for wo in state.work_orders if start <= wo["date"] <= end]
+        count = {name: sum(1 for wo in in_window if wo["status"] == status)
+                 for status, name in (("assigned", "assigned"), ("applied", "applied"), ("confirmed", "confirmed"), ("available", "new"))}
+        return {"status": True, "responseCount": count}
 
     @app.get("/my/dashboard/main-dashboard", response_class=HTMLResponse)
     async def dashboard(request: Request):

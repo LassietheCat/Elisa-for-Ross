@@ -83,6 +83,7 @@ td.past-date{background:#f8f8f8} td.today{background:#e0ebf7}
   <div class="brand">elisa</div>
   <div class="dropdown-menu" style="display:none"><a href="" tabindex="200" role="menuitem" alt="Open Work Orders">Open Work Orders </a></div>
   <span class="dropdown-toggle" id="user-menu">Test Interpreter &#9662;</span>
+  <ul class="dropdown-menu user-dropdown" id="user-dropdown" style="display:none"><li><a href="" id="logout-link">Logout</a></li></ul>
   <ul class="nav nav-tabs">
     <li><a data-tab="home">Home</a></li><li><a>Past Due</a></li><li><a>My Work Orders</a></li>
     <li><a data-tab="owo">Open Work Orders</a></li><li><a>Profile</a></li><li><a>Knowledge Library</a></li>
@@ -97,9 +98,20 @@ td.past-date{background:#f8f8f8} td.today{background:#e0ebf7}
       <button class="btn btn-sm status-btn"><span class="small-view-btn">Applied</span> <span class="count" data-count="applied">0</span></button>
       <button class="btn btn-sm status-btn"><span class="small-view-btn">Assigned</span> <span class="count" data-count="assigned">0</span></button>
       <button class="btn btn-sm status-btn"><span class="small-view-btn">Confirm</span> <span class="count" data-count="confirmed">0</span></button>
+      <span class="view-toggle">
+        <button class="btn btn-sm" disabled><span class="small-view-btn">Court</span></button>
+        <button class="btn btn-sm"><span class="small-view-btn">Language</span></button>
+      </span>
     </div>
     <div class="filters">Service Type: 3 Selected 3 / 3 &middot; Reporting Court: 75 Selected 75 / 75 &middot; Language: 1 Selected 1 / 1</div>
     <div class="loading-dots" id="loader" style="display:none">&bull; &bull;</div>
+    <div class="legacy-calendar" style="display:none">
+      <div class="header"><i class="fa fa-angle-left"></i><span class="calender-monyh-header">January 2020</span><i class="fa fa-angle-right"></i></div>
+      <table><tbody><tr><td class="calendar-day"><div class="date-cell">
+        <div class="d-flex block-am"><div class="calendar-date"><div class="date">1</div><div class="mt-2"><span class="badge time-slab-badge">AM</span></div></div>
+        <div class="calender-data"><span class="badge badge-primary">9 Available</span></div></div>
+      </div></td></tr></tbody></table>
+    </div>
     <div class="calendar-panel">
       <div class="col-sm-12 d-flex justify-content-center"><div class="header">
         <i class="fa fa-angle-left" id="prev"></i>
@@ -118,7 +130,8 @@ td.past-date{background:#f8f8f8} td.today{background:#e0ebf7}
 const CFG = __CONFIG__;
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const WORDS = {available: ['Available', 'badge-primary'], applied: ['Applied', 'badge-yellow'],
-               assigned: ['Assigned', 'badge-warning'], confirmed: ['Confirmed', 'badge-success']};
+               assigned: ['Assigned', 'badge-warning'], confirmed: ['Confirmed', 'badge-success'],
+               cancelled: ['Cancelled', 'badge-danger']};
 const view = {year: parseInt(CFG.today.slice(0, 4), 10), month: parseInt(CFG.today.slice(5, 7), 10)};
 const body = document.getElementById('cal-body');
 const statusButtons = () => Array.from(document.querySelectorAll('.status-btn'));
@@ -136,13 +149,21 @@ async function api(url, opts) {
 async function load() {
   setLoading(true);
   try {
-    const res = await api(`/api/mock/calendar?year=${view.year}&month=${view.month}`);
+    const pad = n => String(n).padStart(2, '0');
+    const last = new Date(Date.UTC(view.year, view.month, 0)).getUTCDate();
+    const range = {startDate: `${view.year}-${pad(view.month)}-01`, endDate: `${view.year}-${pad(view.month)}-${pad(last)}`};
+    const post = (url, payload) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const [res] = await Promise.all([
+      api(`/api/mock/calendar?year=${view.year}&month=${view.month}`),
+      post('/api/open-work-orders/mock-client/interpreter-scheduled', {filterBy: range}),
+      post('/api/open-work-orders/mock-client/get-open-work-order-count1', {filter: range}),
+    ]);
     render(await res.json());
   } finally { setLoading(false); }
 }
 function tags(iso, half, data) {
   const counts = (data.cells[iso] || {})[half] || {};
-  return ['available', 'applied', 'assigned', 'confirmed'].filter(s => counts[s]).map(s =>
+  return ['available', 'applied', 'assigned', 'confirmed', 'cancelled'].filter(s => counts[s]).map(s =>
     `<div class="ng-scope"><span class="badge ${WORDS[s][1]} ng-binding" data-slot="${iso} ${half}" data-status="${s}">${counts[s]} ${WORDS[s][0]}</span></div>`
   ).join('');
 }
@@ -186,6 +207,15 @@ function show(tab) {
   if (tab === 'owo') load();
 }
 document.querySelectorAll('[data-tab]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.tab); }));
+document.getElementById('user-menu').addEventListener('click', () => {
+  const menu = document.getElementById('user-dropdown');
+  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+});
+document.getElementById('logout-link').addEventListener('click', async e => {
+  e.preventDefault();
+  await fetch('/api/logout', {method: 'POST'});
+  location.href = '/login';
+});
 statusButtons().forEach(b => b.addEventListener('click', () => { if (!busy()) load(); }));
 document.getElementById('next').addEventListener('click', () => {
   if (busy()) return;

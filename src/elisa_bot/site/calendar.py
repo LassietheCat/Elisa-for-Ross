@@ -22,9 +22,11 @@ _TITLE_RE = re.compile(r"^\s*([A-Za-z]+)\s+(\d{4})\s*$")
 
 _WALK_JS = r"""
   const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
+  const shown = el => el.getClientRects().length > 0;
   const TAG = /^(\d+)\s+([A-Za-z][A-Za-z ]*)$/;
   function* walk() {
     for (const td of document.querySelectorAll(sel.dayCell)) {
+      if (!shown(td)) continue;
       const cell = td.querySelector(sel.dateCell);
       if (!cell) continue;
       const dayEl = cell.querySelector(sel.dayNumber);
@@ -52,7 +54,7 @@ _READ_JS = (
     "(sel) => {"
     + _WALK_JS
     + r"""
-  const title = document.querySelector(sel.monthTitle);
+  const title = Array.from(document.querySelectorAll(sel.monthTitle)).find(shown) || null;
   const cells = [];
   for (const { day, halves } of walk()) {
     const plain = {};
@@ -95,6 +97,7 @@ class CalendarReader:
         self.sel = selectors
         self.settle_s = settle_ms / 1000
         self.timeout_s = timeout_ms / 1000
+        self.saw_loading = False
         self._status_res = {status: re.compile(rx, re.I) for status, rx in selectors.status_words.items()}
 
     def _js_args(self, **extra) -> dict:
@@ -113,7 +116,7 @@ class CalendarReader:
         return await self.page.evaluate(_READ_JS, self._js_args())
 
     async def _busy(self) -> bool:
-        buttons = self.page.locator(self.sel.status_button)
+        buttons = self.page.locator(self.sel.status_button).filter(visible=True)
         for i in range(await buttons.count()):
             if await buttons.nth(i).is_disabled():
                 return True
@@ -145,7 +148,7 @@ class CalendarReader:
             previous = current
 
     async def refresh(self) -> tuple[int, int]:
-        button = self.page.locator(self.sel.available_filter).first
+        button = self.page.locator(self.sel.available_filter).filter(visible=True).first
         try:
             await button.wait_for(state="visible", timeout=int(self.timeout_s * 1000))
         except PlaywrightError:
@@ -154,7 +157,11 @@ class CalendarReader:
         await button.click()
         loop = asyncio.get_running_loop()
         started_by = loop.time() + 1.5
-        while loop.time() < started_by and await self._idle():
+        self.saw_loading = False
+        while loop.time() < started_by:
+            if await self._busy():
+                self.saw_loading = True
+                break
             await asyncio.sleep(0.025)
         title = (await self.wait_ready()).get("title")
         month = parse_month_title(title)
@@ -174,8 +181,9 @@ class CalendarReader:
             if current == (year, month):
                 return
             arrow = self.sel.next_month if (year, month) > current else self.sel.prev_month
+            await self._wait(self._idle, "the calendar to be idle")
             try:
-                await self.page.locator(arrow).first.click()
+                await self.page.locator(arrow).filter(visible=True).first.click()
             except PlaywrightError:
                 raise NavigationFailed("the month arrow was not found") from None
 
@@ -219,7 +227,7 @@ class CalendarReader:
             await handle.dispose()
         return element
 
-    def _status_of(self, word: str) -> str | None:
+    def status_of(self, word: str) -> str | None:
         for status, regex in self._status_res.items():
             if regex.match(word.strip()):
                 return status
@@ -239,7 +247,7 @@ class CalendarReader:
             for half in Half:
                 tags = SlotTags()
                 for tag in cell["halves"].get(half.value, []):
-                    status = self._status_of(tag["word"])
+                    status = self.status_of(tag["word"])
                     if status is None:
                         log.debug("Ignoring a tag with an unknown status word on %s %s", day, half.value)
                         continue

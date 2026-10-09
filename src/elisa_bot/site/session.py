@@ -6,7 +6,7 @@ import re
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from ..config import Settings
@@ -114,13 +114,16 @@ class SiteSession:
             raise NavigationFailed("the Open Work Orders tab was not found") from None
         await tab.click()
         try:
-            await self.page.locator(self.sel.month_title).first.wait_for(state="visible", timeout=30_000)
+            await self._month_title().wait_for(state="visible", timeout=30_000)
         except PlaywrightError:
             raise NavigationFailed("the calendar did not appear") from None
 
+    def _month_title(self) -> Locator:
+        return self.page.locator(self.sel.month_title).filter(visible=True).first
+
     async def calendar_visible(self) -> bool:
         try:
-            return await self.page.locator(self.sel.month_title).first.is_visible()
+            return await self.page.locator(self.sel.month_title).filter(visible=True).count() > 0
         except PlaywrightError:
             return False
 
@@ -132,6 +135,43 @@ class SiteSession:
         if not await self.calendar_visible():
             await self.open_work_orders()
         return signed_in_now
+
+    async def logout(self) -> bool:
+        if not self.started or not self.is_signed_in():
+            return False
+        page = self.page
+        logout_text = re.compile(self.sel.logout_re, re.I)
+        try:
+            link = await _first_visible(page.get_by_text(logout_text))
+            if link is None:
+                menus = page.locator(self.sel.user_menu)
+                for i in reversed(range(await menus.count())):
+                    menu = menus.nth(i)
+                    if await menu.is_visible():
+                        await menu.click(timeout=5_000)
+                        break
+                await asyncio.sleep(0.5)
+                link = await _first_visible(page.get_by_text(logout_text))
+            if link is None:
+                log.info("Sign-out link not found; the session will expire on its own")
+                return False
+            await link.click(timeout=5_000)
+            await page.wait_for_url(
+                lambda url: urlsplit(url).path.startswith(self.sel.login_path), timeout=10_000
+            )
+        except PlaywrightError:
+            log.info("Sign-out did not complete; the session will expire on its own")
+            return False
+        log.info("Signed out of Elisa")
+        return True
+
+
+async def _first_visible(locator: Locator) -> Locator | None:
+    for i in range(await locator.count()):
+        item = locator.nth(i)
+        if await item.is_visible():
+            return item
+    return None
 
 
 async def _wait_until(

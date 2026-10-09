@@ -39,6 +39,7 @@ async def test_check_reads_both_months_and_changes_nothing(mock, settings):
     assert slots[S("2026-11-03 PM")].assigned == 1
     assert not settings.state_path.exists()
     assert mock.stats()["details_opened"] == 0
+    assert mock.stats()["logouts"] == 1
 
 
 async def test_first_run_only_records_what_is_already_open(mock, tmp_path):
