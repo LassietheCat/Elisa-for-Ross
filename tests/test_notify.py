@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import logging
 import smtplib
+import socket
 
 import pytest
+from aiosmtpd.controller import Controller
+from aiosmtpd.smtp import AuthResult, LoginPassword
 
 from elisa_bot import notify
 from elisa_bot.config import Settings
 from elisa_bot.models import ApplyOutcome, ApplyResult, Slot
-from elisa_bot.notify import EmailNotifier, Message, cycle_message
+from elisa_bot.notify import EmailNotifier, Message, cycle_message, paused_message
 
 S = Slot.parse
 
@@ -117,3 +120,70 @@ async def test_email_failure_retries_then_gives_up(fake_smtp):
 def test_console_is_used_until_email_is_configured():
     assert isinstance(notify.build_notifier(Settings()), notify.ConsoleNotifier)
     assert isinstance(notify.build_notifier(email_settings()), notify.EmailNotifier)
+
+
+def test_paused_message_explains_what_to_do():
+    message = paused_message("invalid_credentials")
+    assert message.subject == "Elisa: bot switched off (sign-in problem)"
+    assert "invalid_credentials" in message.text and "switch the bot back on" in message.text
+
+
+OWNER = "owner@example.test"
+APP_PASSWORD = "app-password-1234"
+
+
+class Inbox:
+    def __init__(self) -> None:
+        self.envelopes = []
+
+    async def handle_DATA(self, server, session, envelope):
+        self.envelopes.append(envelope)
+        return "250 OK"
+
+
+def _check_login(server, session, envelope, mechanism, auth_data):
+    ok = isinstance(auth_data, LoginPassword) and auth_data.login == OWNER.encode() and auth_data.password == APP_PASSWORD.encode()
+    return AuthResult(success=ok)
+
+
+@pytest.fixture
+def mail_server():
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    inbox = Inbox()
+    controller = Controller(inbox, hostname="127.0.0.1", port=port, authenticator=_check_login, auth_require_tls=False)
+    controller.start()
+    yield inbox, port
+    controller.stop()
+
+
+def owner_account(port: int, password: str = APP_PASSWORD) -> Settings:
+    return Settings.from_env({
+        "SMTP_HOST": "127.0.0.1",
+        "SMTP_PORT": str(port),
+        "SMTP_STARTTLS": "false",
+        "SMTP_USERNAME": OWNER,
+        "SMTP_PASSWORD": password,
+        "ALERT_EMAIL_TO": OWNER,
+    })
+
+
+async def test_alert_goes_out_from_the_owners_own_account(mail_server):
+    inbox, port = mail_server
+    sent = await EmailNotifier(owner_account(port)).send(Message("Elisa: applied Wed Oct 14 AM", "Applied: Wed Oct 14 AM."))
+    assert sent
+    envelope = inbox.envelopes[-1]
+    assert envelope.mail_from == OWNER and envelope.rcpt_tos == [OWNER]
+    content = envelope.content.decode()
+    assert f"From: Elisa Bot <{OWNER}>" in content
+    assert "Subject: Elisa: applied Wed Oct 14 AM" in content
+    assert "Applied: Wed Oct 14 AM." in content
+
+
+async def test_wrong_app_password_is_reported_not_raised(mail_server, caplog):
+    inbox, port = mail_server
+    sent = await EmailNotifier(owner_account(port, "wrong"), retries=0).send(Message("s", "t"))
+    assert sent is False
+    assert inbox.envelopes == []
+    assert "wrong" not in caplog.text

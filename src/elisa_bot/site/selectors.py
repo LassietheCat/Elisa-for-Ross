@@ -18,6 +18,7 @@ _STATUS_WORDS = {
 @dataclass
 class Selectors:
     login_path: str = "/login"
+    dashboard_path: str = "/my/dashboard/main-dashboard"
     email_input: str = "input#email, input[type=email]"
     password_input: str = "input[type=password]"
     login_button: str = "button[type=submit]"

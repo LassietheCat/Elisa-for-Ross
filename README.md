@@ -25,6 +25,10 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 ## Commands
 
 ```bash
+.venv/bin/python -m elisa_bot run              # the always-on bot (see below)
+.venv/bin/python -m elisa_bot control          # the password-protected on/off page (see below)
+.venv/bin/python -m elisa_bot on | off         # switch the bot on or off from the command line
+.venv/bin/python -m elisa_bot status           # the switch and the last check
 .venv/bin/python -m elisa_bot check            # sign in, show both months (read-only: clicks nothing)
 .venv/bin/python -m elisa_bot site-check       # read-only: does the reader fit the live page? (see below)
 .venv/bin/python -m elisa_bot once             # one full run (test mode unless TEST_MODE=false)
@@ -34,8 +38,51 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 ```
 
 `check`, `site-check` and `once` each sign in, then sign out at the end, so don't
-schedule `once` every 15 seconds. The always-on loop arrives with the on/off switch
-(Oct 9) and keeps one session open.
+schedule `once` every 15 seconds; use `run` for that.
+
+### run: the always-on bot
+
+`run` keeps going until it is stopped (Ctrl+C or a normal service stop). It starts
+**off**. Every second it looks at the switch (`data/control.json`):
+
+- **On:** it signs in once, keeps that session, and checks every `POLL_SECONDS`
+  (15 by default, never below `MIN_POLL_SECONDS`). Each check is one full run (see
+  "What one run does").
+- **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
+- **Sign-in rejected** (wrong password or a verification step): it switches itself
+  off, emails one alert, and never retries, so the account can't be locked out.
+- **A check fails** (page didn't load, site error): it reloads the dashboard and
+  waits longer before the next try (30 s, 60 s, … up to 5 minutes), then goes back to
+  every `POLL_SECONDS` after a good check.
+
+### control: the on/off page
+
+`control` serves a small mobile-friendly page on `CONTROL_HOST:CONTROL_PORT`. It
+needs `CONTROL_PASSWORD` and `CONTROL_SECRET_KEY` (32+ random characters). The page
+shows:
+
+- **ON** or **OFF**, with one big button to switch;
+- the check interval (15 s and up);
+- the last check and whether it worked, with a warning if the bot has stopped
+  checking;
+- the slots accepted recently (date and AM/PM only);
+- a **Send test alert** button.
+
+Test mode vs live is deliberately **not** on the page; it stays a server setting.
+
+Sign-in uses a signed, HttpOnly, SameSite=Strict cookie that lasts 30 days. Forms carry a
+CSRF token, wrong passwords are limited to 5 per 15 minutes, and the page sends strict
+security headers. Serve it over HTTPS (`CONTROL_COOKIE_SECURE=true`).
+
+### Alerts from the client's email account
+
+Set `SMTP_PROVIDER` (`gmail`, `outlook`, `aol`, `yahoo`, `icloud`), the account in
+`SMTP_USERNAME`, and an **app password** in `SMTP_PASSWORD`. The alert is then sent
+from that address with the sender name `SMTP_FROM_NAME` ("Elisa Bot" by default).
+Gmail, AOL, Yahoo and iCloud require an app password, created in the account's
+security settings, rather than the normal password. For other providers leave
+`SMTP_PROVIDER` empty and set `SMTP_HOST`, `SMTP_PORT`, `SMTP_SSL` and
+`SMTP_STARTTLS`. Check it with `test-email` or the page's **Send test alert** button.
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the

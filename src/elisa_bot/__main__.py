@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import calendar
 import dataclasses
+import signal
 import sys
 from pathlib import Path
 
@@ -13,8 +14,11 @@ from .livecheck import SiteCheckReport, run_site_check
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
 from .notify import build_notifier, test_message
+from .service import run_forever
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
-from .site.selectors import load_selectors
+from .site.selectors import Selectors, load_selectors
+from .state import ControlStore, StateStore
+from .timeutil import now_in
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -30,6 +34,11 @@ def _parser() -> argparse.ArgumentParser:
     mode = once.add_mutually_exclusive_group()
     mode.add_argument("--live", action="store_true", help="really click Accept (overrides TEST_MODE)")
     mode.add_argument("--test-mode", action="store_true", help="find the Accept button but don't click it")
+    sub.add_parser("run", help="keep running: check every POLL_SECONDS while the switch is on")
+    sub.add_parser("control", help="serve the password-protected on/off page")
+    sub.add_parser("on", help="switch the bot on")
+    sub.add_parser("off", help="switch the bot off")
+    sub.add_parser("status", help="show the switch and the last check")
     sub.add_parser("test-email", help="send a test alert")
     reset = sub.add_parser("reset-state", help="forget saved openings; the next run records a fresh baseline")
     reset.add_argument("--yes", action="store_true", help="confirm")
@@ -87,6 +96,25 @@ def _print_site_check(report: SiteCheckReport) -> None:
     print("Result: the reader fits the live page." if report.ok else "Result: something needs fixing (see above).")
 
 
+def _print_status(settings: Settings) -> None:
+    control = ControlStore(settings).load()
+    state = StateStore(settings.state_path).load()
+    mode = "test mode" if settings.test_mode else "LIVE"
+    print(f"Switch: {'ON' if control.enabled else 'OFF'}, every {control.poll_seconds} s, {mode}")
+    result = ""
+    if state.last_run_ok is not None:
+        result = " (ok)" if state.last_run_ok else f" (failed: {state.last_error})"
+    print(f"Last check: {state.last_run_at or 'never'}{result}")
+
+
+async def _run_until_stopped(settings: Settings, selectors: Selectors) -> None:
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    await run_forever(settings, selectors, stop=stop)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -110,6 +138,33 @@ def main(argv: list[str] | None = None) -> int:
         sent = asyncio.run(build_notifier(settings).send(test_message()))
         print("Test alert sent." if sent else "Test alert failed; see the log.")
         return 0 if sent else 1
+    if args.command in ("on", "off"):
+        control = ControlStore(settings).update(by="cli", now=now_in(settings.timezone), enabled=args.command == "on")
+        print(f"Switched {'on' if control.enabled else 'off'} (every {control.poll_seconds} s).")
+        return 0
+    if args.command == "status":
+        _print_status(settings)
+        return 0
+    if args.command == "control":
+        try:
+            settings.require_control_secrets()
+        except ConfigError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 2
+        import uvicorn
+
+        from .web import create_control_app
+
+        uvicorn.run(create_control_app(settings), host=settings.control_host, port=settings.control_port, log_level="warning")
+        return 0
+    if args.command == "run":
+        try:
+            settings.require_site_credentials()
+        except ConfigError as exc:
+            print(f"Configuration error: {exc}", file=sys.stderr)
+            return 2
+        asyncio.run(_run_until_stopped(settings, selectors))
+        return 0
 
     try:
         if args.command == "check":

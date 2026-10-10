@@ -76,8 +76,10 @@ async def run_once(
         await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
-        await reader.refresh()
-        for year, month in target_months(today):
+        displayed = await reader.refresh()
+        months = target_months(today)
+        months.sort(key=lambda month: month != displayed)
+        for year, month in months:
             await reader.go_to_month(year, month)
             reading = await reader.read_displayed_month()
             plan = plan_month(reading.slots, state, today=today, settings=settings, already_planned=len(report.results))

@@ -9,6 +9,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .config import Settings
 from .models import Slot
 from .timeutil import to_iso
 
@@ -74,18 +75,68 @@ class StateStore:
         return state
 
     def save(self, state: BotState) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
+        write_json(self.path, asdict(state))
+
+
+@dataclass
+class ControlState:
+    enabled: bool = False
+    poll_seconds: int = 15
+    updated_at: str | None = None
+    updated_by: str | None = None
+
+
+class ControlStore:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.path = settings.control_path
+
+    def load(self) -> ControlState:
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(asdict(state), handle, indent=2, sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, self.path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        try:
+            poll = self.settings.clamp_poll(data.get("poll_seconds", self.settings.poll_seconds))
+        except (TypeError, ValueError):
+            poll = self.settings.poll_seconds
+        updated_at, updated_by = data.get("updated_at"), data.get("updated_by")
+        return ControlState(
+            enabled=data.get("enabled") is True,
+            poll_seconds=poll,
+            updated_at=updated_at if isinstance(updated_at, str) else None,
+            updated_by=updated_by if isinstance(updated_by, str) else None,
+        )
+
+    def update(
+        self, *, by: str, now: dt.datetime, enabled: bool | None = None, poll_seconds: int | None = None
+    ) -> ControlState:
+        control = self.load()
+        if enabled is not None:
+            control.enabled = bool(enabled)
+        if poll_seconds is not None:
+            control.poll_seconds = self.settings.clamp_poll(poll_seconds)
+        control.updated_at = to_iso(now)
+        control.updated_by = by
+        write_json(self.path, asdict(control))
+        return control
+
+
+def write_json(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise

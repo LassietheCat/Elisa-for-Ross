@@ -75,3 +75,35 @@ def test_slot_format_label_and_order():
     assert str(slot) == "2026-10-14 PM"
     assert slot.label() == "Wed Oct 14 PM"
     assert sorted([slot, Slot.parse("2026-10-14 AM")])[0].half is Half.AM
+
+
+def test_smtp_provider_presets():
+    aol = Settings.from_env({"SMTP_PROVIDER": "aol", "SMTP_USERNAME": "owner@example.test"})
+    assert (aol.smtp_host, aol.smtp_port, aol.smtp_ssl, aol.smtp_starttls) == ("smtp.aol.com", 465, True, False)
+    assert aol.smtp_from == "owner@example.test"
+    gmail = Settings.from_env({"SMTP_PROVIDER": "Gmail"})
+    assert (gmail.smtp_host, gmail.smtp_port, gmail.smtp_ssl, gmail.smtp_starttls) == ("smtp.gmail.com", 587, False, True)
+    custom = Settings.from_env({"SMTP_PROVIDER": "gmail", "SMTP_PORT": "465", "SMTP_SSL": "true", "SMTP_FROM": "alerts@example.test"})
+    assert (custom.smtp_port, custom.smtp_ssl, custom.smtp_starttls, custom.smtp_from) == (465, True, False, "alerts@example.test")
+    with pytest.raises(ConfigError, match="SMTP_PROVIDER"):
+        Settings.from_env({"SMTP_PROVIDER": "carrier-pigeon"})
+
+
+def test_check_interval_limits():
+    assert Settings.from_env({}).poll_seconds == 15
+    with pytest.raises(ConfigError, match="POLL_SECONDS must be at least 15"):
+        Settings.from_env({"POLL_SECONDS": "5"})
+    with pytest.raises(ConfigError, match="MIN_POLL_SECONDS"):
+        Settings.from_env({"MIN_POLL_SECONDS": "1"})
+    settings = Settings.from_env({"MIN_POLL_SECONDS": "10", "POLL_SECONDS": "10"})
+    assert (settings.clamp_poll(3), settings.clamp_poll(9999)) == (10, 600)
+
+
+def test_control_secrets_are_checked_and_hidden():
+    with pytest.raises(ConfigError, match="CONTROL_PASSWORD, CONTROL_SECRET_KEY"):
+        Settings.from_env({}).require_control_secrets()
+    with pytest.raises(ConfigError, match="at least 32"):
+        Settings.from_env({"CONTROL_PASSWORD": "p", "CONTROL_SECRET_KEY": "short"}).require_control_secrets()
+    settings = Settings.from_env({"CONTROL_PASSWORD": "pw-123", "CONTROL_SECRET_KEY": "k" * 32})
+    settings.require_control_secrets()
+    assert "pw-123" not in repr(settings) and "pw-123" in settings.secret_values()

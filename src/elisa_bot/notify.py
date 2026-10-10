@@ -6,6 +6,7 @@ import smtplib
 import ssl
 from dataclasses import dataclass
 from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Iterable, Protocol
 
 from .config import Settings
@@ -59,7 +60,7 @@ class EmailNotifier:
     def _send(self, message: Message) -> None:
         s = self.settings
         email = EmailMessage()
-        email["From"] = s.smtp_from or ""
+        email["From"] = formataddr((s.smtp_from_name, s.smtp_from or ""))
         email["To"] = ", ".join(s.alert_email_to)
         email["Subject"] = message.subject
         email.set_content(message.text)
@@ -138,6 +139,14 @@ def cycle_message(
     if subject is None:
         subject = f"Elisa: opening {skipped[0].label()} (already booked)"
     return Message(subject, " ".join(lines))
+
+
+def paused_message(code: str) -> Message:
+    return Message(
+        "Elisa: bot switched off (sign-in problem)",
+        f"Elisa did not accept the sign-in ({code}). The bot switched itself off so it won't lock the account. "
+        "Fix the password, then switch the bot back on.",
+    )
 
 
 def test_message() -> Message:

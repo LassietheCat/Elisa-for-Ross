@@ -11,6 +11,15 @@ class ConfigError(ValueError):
     pass
 
 
+SMTP_PRESETS: dict[str, tuple[str, int, bool]] = {
+    "gmail": ("smtp.gmail.com", 587, False),
+    "outlook": ("smtp-mail.outlook.com", 587, False),
+    "aol": ("smtp.aol.com", 465, True),
+    "yahoo": ("smtp.mail.yahoo.com", 465, True),
+    "icloud": ("smtp.mail.me.com", 587, False),
+}
+
+
 def read_env_file(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -97,16 +106,29 @@ class Settings:
     max_applies_per_day: int = 10
     max_attempts_per_slot: int = 2
 
+    poll_seconds: int = 15
+    min_poll_seconds: int = 15
+    max_poll_seconds: int = 600
+    logout_when_off: bool = True
+
     notify_missed: bool = True
     notify_skipped: bool = False
+    smtp_provider: str | None = None
     smtp_host: str | None = None
     smtp_port: int = 587
-    smtp_username: str | None = None
+    smtp_username: str | None = field(default=None, repr=False)
     smtp_password: str | None = field(default=None, repr=False)
-    smtp_from: str | None = None
+    smtp_from: str | None = field(default=None, repr=False)
+    smtp_from_name: str = "Elisa Bot"
     smtp_starttls: bool = True
     smtp_ssl: bool = False
-    alert_email_to: tuple[str, ...] = ()
+    alert_email_to: tuple[str, ...] = field(default=(), repr=False)
+
+    control_password: str | None = field(default=None, repr=False)
+    control_secret_key: str | None = field(default=None, repr=False)
+    control_host: str = "127.0.0.1"
+    control_port: int = 8080
+    control_cookie_secure: bool = True
 
     data_dir: Path = Path("data")
     log_level: str = "INFO"
@@ -129,6 +151,17 @@ class Settings:
             raise ConfigError("LOG_LEVEL must be DEBUG, INFO, WARNING or ERROR")
         selectors_file = e.text("SELECTORS_FILE")
 
+        min_poll = e.integer("MIN_POLL_SECONDS", 15, lo=5)
+        max_poll = e.integer("MAX_POLL_SECONDS", 600, lo=min_poll)
+        poll = e.integer("POLL_SECONDS", 15, lo=min_poll, hi=max_poll)
+
+        provider = (e.text("SMTP_PROVIDER") or "").lower() or None
+        if provider is not None and provider not in SMTP_PRESETS:
+            raise ConfigError(f"SMTP_PROVIDER must be one of: {', '.join(SMTP_PRESETS)}")
+        preset_host, preset_port, preset_ssl = SMTP_PRESETS.get(provider or "", (None, 587, False))
+        smtp_ssl = e.boolean("SMTP_SSL", preset_ssl)
+        smtp_username = e.text("SMTP_USERNAME")
+
         return cls(
             base_url=(e.text("ELISA_BASE_URL", cls.base_url) or cls.base_url).rstrip("/"),
             elisa_email=e.secret("ELISA_EMAIL"),
@@ -140,16 +173,27 @@ class Settings:
             apply_on_first_run=e.boolean("APPLY_ON_FIRST_RUN", False),
             max_applies_per_day=e.integer("MAX_APPLIES_PER_DAY", 10, lo=0),
             max_attempts_per_slot=e.integer("MAX_ATTEMPTS_PER_SLOT", 2, lo=1),
+            poll_seconds=poll,
+            min_poll_seconds=min_poll,
+            max_poll_seconds=max_poll,
+            logout_when_off=e.boolean("LOGOUT_WHEN_OFF", True),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
             notify_skipped=e.boolean("NOTIFY_SKIPPED", False),
-            smtp_host=e.text("SMTP_HOST"),
-            smtp_port=e.integer("SMTP_PORT", 587, lo=1, hi=65535),
-            smtp_username=e.text("SMTP_USERNAME"),
+            smtp_provider=provider,
+            smtp_host=e.text("SMTP_HOST") or preset_host,
+            smtp_port=e.integer("SMTP_PORT", preset_port, lo=1, hi=65535),
+            smtp_username=smtp_username,
             smtp_password=e.secret("SMTP_PASSWORD"),
-            smtp_from=e.text("SMTP_FROM"),
-            smtp_starttls=e.boolean("SMTP_STARTTLS", True),
-            smtp_ssl=e.boolean("SMTP_SSL", False),
+            smtp_from=e.text("SMTP_FROM") or smtp_username,
+            smtp_from_name=e.text("SMTP_FROM_NAME", "Elisa Bot") or "Elisa Bot",
+            smtp_starttls=e.boolean("SMTP_STARTTLS", not smtp_ssl),
+            smtp_ssl=smtp_ssl,
             alert_email_to=e.items("ALERT_EMAIL_TO"),
+            control_password=e.secret("CONTROL_PASSWORD"),
+            control_secret_key=e.secret("CONTROL_SECRET_KEY"),
+            control_host=e.text("CONTROL_HOST", "127.0.0.1") or "127.0.0.1",
+            control_port=e.integer("CONTROL_PORT", 8080, lo=1, hi=65535),
+            control_cookie_secure=e.boolean("CONTROL_COOKIE_SECURE", True),
             data_dir=Path(e.text("DATA_DIR", "data") or "data"),
             log_level=log_level,
         )
@@ -159,6 +203,10 @@ class Settings:
         return self.data_dir / "state.json"
 
     @property
+    def control_path(self) -> Path:
+        return self.data_dir / "control.json"
+
+    @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -166,9 +214,29 @@ class Settings:
     def email_enabled(self) -> bool:
         return bool(self.smtp_host and self.smtp_from and self.alert_email_to)
 
+    def clamp_poll(self, seconds: int) -> int:
+        return max(self.min_poll_seconds, min(self.max_poll_seconds, int(seconds)))
+
     def secret_values(self) -> list[str]:
-        candidates = [self.elisa_email, self.elisa_password, self.smtp_password]
+        candidates = [
+            self.elisa_email,
+            self.elisa_password,
+            self.smtp_password,
+            self.control_password,
+            self.control_secret_key,
+        ]
         return [value for value in candidates if value]
+
+    def require_control_secrets(self) -> None:
+        missing = [
+            name
+            for name, value in (("CONTROL_PASSWORD", self.control_password), ("CONTROL_SECRET_KEY", self.control_secret_key))
+            if not value
+        ]
+        if missing:
+            raise ConfigError(f"missing required setting(s): {', '.join(missing)}")
+        if len(self.control_secret_key or "") < 32:
+            raise ConfigError("CONTROL_SECRET_KEY must be at least 32 characters")
 
     def require_site_credentials(self) -> None:
         missing = [

@@ -49,3 +49,19 @@ def test_prune_forgets_old_slots(tmp_path):
     assert list(state.applied) == ["2026-10-14 AM"]
     assert list(state.attempts) == ["2026-10-15 PM"]
     assert list(state.applies_by_day) == ["2026-10-07"]
+
+
+def test_switch_file_defaults_off_and_clamps(tmp_path):
+    from elisa_bot.config import Settings
+    from elisa_bot.state import ControlState, ControlStore
+
+    now = dt.datetime(2026, 10, 9, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+    settings = Settings(data_dir=tmp_path)
+    store = ControlStore(settings)
+    assert store.load() == ControlState(enabled=False, poll_seconds=15)
+    control = store.update(by="web", now=now, enabled=True, poll_seconds=5)
+    assert (control.enabled, control.poll_seconds, control.updated_by) == (True, 15, "web")
+    assert store.load() == control
+    assert stat.S_IMODE(settings.control_path.stat().st_mode) == 0o600
+    settings.control_path.write_text("{broken")
+    assert store.load().enabled is False
