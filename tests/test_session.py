@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from elisa_bot.site.errors import InvalidCredentials, VerificationRequired
+from elisa_bot.site.errors import InvalidCredentials, SignInPaused, SiteBusy, VerificationRequired
+from elisa_bot.site.selectors import Selectors
+from elisa_bot.site.session import SignInLimiter, SiteSession
 
 pytestmark = pytest.mark.browser
 
@@ -53,3 +55,26 @@ async def test_signs_in_again_after_the_site_logs_it_out(mock, session):
     await session.page.reload()
     assert await session.ensure_ready() is True
     assert mock.stats()["logins_ok"] == 2
+
+
+async def test_rate_limited_sign_in_is_busy_not_a_rejected_password(mock, session):
+    mock.configure(rate_limited_times=1, retry_after="30")
+    with pytest.raises(SiteBusy) as info:
+        await session.ensure_ready()
+    assert info.value.retry_after == 30
+    assert mock.stats()["login_attempts"] == 1
+
+
+async def test_sign_in_limit_stops_extra_sign_ins(mock, settings):
+    session = SiteSession(settings, Selectors(), sign_ins=SignInLimiter(1))
+    await session.start()
+    try:
+        await session.ensure_ready()
+        mock.expire_sessions()
+        await session.page.reload()
+        with pytest.raises(SignInPaused) as info:
+            await session.ensure_ready()
+        assert 3500 < info.value.retry_after <= 3600
+        assert mock.stats()["login_attempts"] == 1
+    finally:
+        await session.close()

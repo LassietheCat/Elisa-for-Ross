@@ -11,7 +11,7 @@ from .models import ApplyOutcome, ApplyResult, Slot, SlotTags
 from .notify import Notifier, build_notifier, cycle_message
 from .site.applier import Applier
 from .site.calendar import CalendarReader
-from .site.errors import SiteError
+from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
 from .state import BotState, StateStore
@@ -48,7 +48,9 @@ async def run_check(settings: Settings, selectors: Selectors, *, now: Clock | No
         await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         await reader.refresh()
-        return await reader.read_months(target_months(clock().date()))
+        slots = await reader.read_months(target_months(clock().date()))
+        session.raise_for_problems()
+        return slots
     finally:
         await session.logout()
         await session.close()
@@ -73,15 +75,18 @@ async def run_once(
     try:
         if not session.started:
             await session.start()
+        session.clear_problems()
         await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
         displayed = await reader.refresh()
+        session.raise_for_problems()
         months = target_months(today)
         months.sort(key=lambda month: month != displayed)
         for year, month in months:
             await reader.go_to_month(year, month)
             reading = await reader.read_displayed_month()
+            session.raise_for_problems()
             plan = plan_month(reading.slots, state, today=today, settings=settings, already_planned=len(report.results))
             report.available |= plan.available
             report.new |= plan.new
@@ -94,10 +99,20 @@ async def run_once(
                 if result.clicked:
                     state.record_apply(slot, clock())
     except Exception as exc:
+        error = exc if isinstance(exc, SiteError) else None
+        if not isinstance(exc, (InvalidCredentials, VerificationRequired)):
+            # A rate limit or failed data request explains a broken page better than the timeout it caused.
+            error = session.problem() or error
         state.last_run_at = to_iso(clock())
         state.last_run_ok = False
-        state.last_error = exc.code if isinstance(exc, SiteError) else "unexpected_error"
+        state.last_error = error.code if error is not None else "unexpected_error"
         store.save(state)
+        # A clicked slot is never handled again, so report it now or it is never reported.
+        clicked = [result for result in report.results if result.clicked]
+        if clicked:
+            report.notified = await _notify(notifier, settings, clicked, ())
+        if error is not None and error is not exc:
+            raise error from exc
         raise
     finally:
         if own_session:
@@ -113,14 +128,19 @@ async def run_once(
     state.prune(today)
     store.save(state)
 
+    report.notified = await _notify(notifier, settings, report.results, report.skipped_booked)
+    return report
+
+
+async def _notify(notifier: Notifier, settings: Settings, results: list[ApplyResult], skipped: list[Slot]) -> bool:
     message = cycle_message(
-        report.results,
-        skipped=report.skipped_booked if settings.notify_skipped else (),
+        results,
+        skipped=skipped if settings.notify_skipped else (),
         include_missed=settings.notify_missed,
     )
-    if message is not None:
-        report.notified = await notifier.send(message)
-    return report
+    if message is None:
+        return False
+    return await notifier.send(message)
 
 
 def _retry_next_time(results: list[ApplyResult], state: BotState, settings: Settings) -> set[Slot]:

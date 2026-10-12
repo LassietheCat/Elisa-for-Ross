@@ -11,7 +11,14 @@ from aiosmtpd.smtp import AuthResult, LoginPassword
 from elisa_bot import notify
 from elisa_bot.config import Settings
 from elisa_bot.models import ApplyOutcome, ApplyResult, Slot
-from elisa_bot.notify import EmailNotifier, Message, cycle_message, paused_message
+from elisa_bot.notify import (
+    EmailNotifier,
+    Message,
+    cycle_message,
+    paused_message,
+    recovered_message,
+    trouble_message,
+)
 
 S = Slot.parse
 
@@ -187,3 +194,11 @@ async def test_wrong_app_password_is_reported_not_raised(mail_server, caplog):
     assert sent is False
     assert inbox.envelopes == []
     assert "wrong" not in caplog.text
+
+
+def test_trouble_alert_says_why_and_holds_no_job_details():
+    message = trouble_message(3, "site_busy")
+    assert message.subject == "Elisa: bot can't check right now"
+    assert message.text.startswith("The last 3 checks failed. Elisa asked the bot to slow down (too many requests).")
+    assert "Unexpected problem (odd_code)." in trouble_message(3, "odd_code").text
+    assert recovered_message(4) == Message("Elisa: bot is working again", "Checks are working again after 4 failed tries.")

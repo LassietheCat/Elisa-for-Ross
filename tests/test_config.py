@@ -17,6 +17,7 @@ def test_defaults_are_safe():
     assert settings.test_mode is True
     assert settings.apply_on_first_run is False
     assert settings.base_url == "https://www.sosi1.com"
+    assert settings.max_sign_ins_per_hour == 6
 
 
 def test_secrets_can_come_from_files_and_never_show_in_repr(tmp_path):
