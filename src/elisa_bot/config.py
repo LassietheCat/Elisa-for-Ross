@@ -110,6 +110,7 @@ class Settings:
     min_poll_seconds: int = 15
     max_poll_seconds: int = 600
     logout_when_off: bool = True
+    max_sign_ins_per_hour: int = 6
 
     notify_missed: bool = True
     notify_skipped: bool = False
@@ -177,6 +178,7 @@ class Settings:
             min_poll_seconds=min_poll,
             max_poll_seconds=max_poll,
             logout_when_off=e.boolean("LOGOUT_WHEN_OFF", True),
+            max_sign_ins_per_hour=e.integer("MAX_SIGN_INS_PER_HOUR", 6, lo=1, hi=60),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
             notify_skipped=e.boolean("NOTIFY_SKIPPED", False),
             smtp_provider=provider,

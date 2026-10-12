@@ -53,7 +53,20 @@ schedule `once` every 15 seconds; use `run` for that.
   off, emails one alert, and never retries, so the account can't be locked out.
 - **A check fails** (page didn't load, site error): it reloads the dashboard and
   waits longer before the next try (30 s, 60 s, … up to 5 minutes), then goes back to
-  every `POLL_SECONDS` after a good check.
+  every `POLL_SECONDS` after a good check. A browser that won't start counts as a
+  failed check too; the bot keeps going.
+- **The site is busy** (it answers 429 Too Many Requests, at sign-in or during a
+  check): the check fails and nothing is accepted. The bot waits longer than for
+  other failures (1, 2, 4, 8 minutes, up to 15), or as long as the site asks in
+  `Retry-After` (up to an hour).
+- **A calendar data request fails** (the site's schedule or count request returns an
+  error): the check fails and nothing is accepted, because a half-loaded calendar
+  could hide a job the owner already has.
+- **Sign-ins are capped** at `MAX_SIGN_INS_PER_HOUR` (6). If the site keeps signing
+  the bot out, it stops signing in until the hour is up, so it never fights over the
+  account or adds to the site's failed-login count.
+- **3 failed checks in a row** send one email saying what went wrong. No more emails
+  follow until a check works again; then one "working again" email.
 
 ### control: the on/off page
 
@@ -134,6 +147,8 @@ it again.
 - A clicked slot is never clicked again. A slot whose try failed *before* the click
   is retried on the next run (up to `MAX_ATTEMPTS_PER_SLOT`).
 - A rejected password is never retried, so the account isn't locked out.
+- **Doubtful reads are dropped:** a check where the site rate-limited the bot or a
+  calendar data request failed accepts nothing and doesn't update the saved state.
 - **Privacy:** only the date + AM/PM of a slot is stored, logged or emailed. Job
   details in the work-order window are never read. Credentials come from `.env`
   or `*_FILE` secret files, are hidden from `repr()`, and are redacted from logs.

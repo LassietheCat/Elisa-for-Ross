@@ -1,31 +1,80 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import logging
+import math
 import re
+import time
+from collections import deque
+from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
-from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, async_playwright
+from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Response, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from ..config import Settings
-from .errors import InvalidCredentials, LoginFailed, NavigationFailed, VerificationRequired
+from .errors import (
+    DataRequestFailed,
+    InvalidCredentials,
+    LoginFailed,
+    NavigationFailed,
+    SignInPaused,
+    SiteBusy,
+    SiteError,
+    VerificationRequired,
+)
 from .selectors import Selectors
 
 log = logging.getLogger(__name__)
 
 LOGIN_TIMEOUT_S = 30
+SIGN_IN_WINDOW_S = 3600
+_WATCHED_TYPES = ("document", "xhr", "fetch")
+
+
+class SignInLimiter:
+    def __init__(self, per_hour: int, *, clock: Callable[[], float] = time.monotonic):
+        self.per_hour = per_hour
+        self.clock = clock
+        self._attempts: deque[float] = deque()
+
+    def take(self) -> None:
+        now = self.clock()
+        while self._attempts and now - self._attempts[0] >= SIGN_IN_WINDOW_S:
+            self._attempts.popleft()
+        if len(self._attempts) >= self.per_hour:
+            wait = math.ceil(self._attempts[0] + SIGN_IN_WINDOW_S - now)
+            raise SignInPaused(f"already signed in {self.per_hour} times in the last hour", retry_after=wait)
+        self._attempts.append(now)
+
+
+def parse_retry_after(value: str | None) -> int | None:
+    if not value:
+        return None
+    value = value.strip()
+    if value.isdigit():
+        return int(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        return None
+    return max(0, math.ceil((when - dt.datetime.now(dt.timezone.utc)).total_seconds()))
 
 
 class SiteSession:
-    def __init__(self, settings: Settings, selectors: Selectors):
+    def __init__(self, settings: Settings, selectors: Selectors, *, sign_ins: SignInLimiter | None = None):
         self.settings = settings
         self.sel = selectors
+        self.sign_ins = sign_ins
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._context: BrowserContext | None = None
         self._page: Page | None = None
+        self._problem: SiteError | None = None
 
     @property
     def started(self) -> bool:
@@ -47,6 +96,29 @@ class SiteSession:
         )
         self._page = await self._context.new_page()
         self._page.set_default_timeout(20_000)
+        self._page.on("response", self._on_response)
+
+    def _on_response(self, response: Response) -> None:
+        if isinstance(self._problem, SiteBusy) or response.request.resource_type not in _WATCHED_TYPES:
+            return
+        path = urlsplit(response.url).path
+        if response.status == 429:
+            retry_after = parse_retry_after(response.headers.get("retry-after"))
+            self._problem = SiteBusy("the site answered 429 Too Many Requests", retry_after=retry_after)
+        elif self._problem is None and response.status >= 400 and (
+            path.endswith(self.sel.schedule_api) or path.endswith(self.sel.counts_api)
+        ):
+            self._problem = DataRequestFailed(f"a calendar data request failed ({response.status})")
+
+    def clear_problems(self) -> None:
+        self._problem = None
+
+    def problem(self) -> SiteError | None:
+        return self._problem
+
+    def raise_for_problems(self) -> None:
+        if self._problem is not None:
+            raise self._problem
 
     async def close(self) -> None:
         for closable in (self._context, self._browser):
@@ -67,6 +139,8 @@ class SiteSession:
 
     async def login(self) -> None:
         self.settings.require_site_credentials()
+        if self.sign_ins is not None:
+            self.sign_ins.take()
         page = self.page
         await page.goto(self.settings.base_url + self.sel.login_path, wait_until="domcontentloaded")
         email = page.locator(self.sel.email_input).first
@@ -91,6 +165,8 @@ class SiteSession:
         while True:
             if not self._on_login_page():
                 return
+            if isinstance(self._problem, SiteBusy):
+                raise self._problem
             text = await self._page_text()
             if verification.search(text):
                 raise VerificationRequired("the site asked for a verification step")

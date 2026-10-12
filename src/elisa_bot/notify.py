@@ -149,6 +149,33 @@ def paused_message(code: str) -> Message:
     )
 
 
+_PROBLEMS = {
+    "site_busy": "Elisa asked the bot to slow down (too many requests).",
+    "sign_in_paused": (
+        "The bot had to sign in again too often, so it paused signing in for a while. "
+        "This may mean someone else is signing in to the same account."
+    ),
+    "data_request_failed": "Elisa's server returned an error while loading the calendar.",
+    "calendar_not_rendered": "The Open Work Orders calendar did not load.",
+    "navigation_failed": "The Open Work Orders page did not load.",
+    "login_failed": "The Elisa sign-in page did not work.",
+    "browser_error": "The bot's web browser had a problem.",
+}
+
+
+def trouble_message(failures: int, code: str) -> Message:
+    reason = _PROBLEMS.get(code, f"Unexpected problem ({code}).")
+    return Message(
+        "Elisa: bot can't check right now",
+        f"The last {failures} checks failed. {reason} The bot keeps trying and waits longer between tries. "
+        "You'll get another email when it's working again.",
+    )
+
+
+def recovered_message(failures: int) -> Message:
+    return Message("Elisa: bot is working again", f"Checks are working again after {failures} failed tries.")
+
+
 def test_message() -> Message:
     return Message(
         "Elisa: test alert",

@@ -36,6 +36,10 @@ DEFAULT_CONFIG = {
     "confirm_dialog": False,
     "button_label": "Accept",
     "schedule_drift": False,
+    "rate_limited_times": 0,
+    "retry_after": "",
+    "schedule_error_times": 0,
+    "schedule_error_after": 0,
 }
 
 
@@ -56,6 +60,7 @@ class MockState:
                 "calendar_fetches": 0,
                 "details_opened": 0,
                 "accept_calls": [],
+                "rate_limited": 0,
             }
 
     def set_work_orders(self, items: list[dict]) -> None:
@@ -75,6 +80,22 @@ def create_app(state: MockState) -> FastAPI:
     def unauthorized() -> JSONResponse:
         return JSONResponse({"message": "Unauthorized"}, status_code=401)
 
+    def failure(*, schedule: bool = False) -> JSONResponse | None:
+        with state.lock:
+            config = state.config
+            if config["rate_limited_times"] > 0:
+                config["rate_limited_times"] -= 1
+                state.stats["rate_limited"] += 1
+                headers = {"Retry-After": config["retry_after"]} if config["retry_after"] else None
+                return JSONResponse({"message": "Too Many Requests"}, status_code=429, headers=headers)
+            if schedule and config["schedule_error_times"] > 0:
+                if config["schedule_error_after"] > 0:
+                    config["schedule_error_after"] -= 1
+                    return None
+                config["schedule_error_times"] -= 1
+                return JSONResponse({"message": "Unexpected server error."}, status_code=500)
+        return None
+
     @app.get("/")
     async def root():
         return RedirectResponse("/login", status_code=302)
@@ -89,6 +110,8 @@ def create_app(state: MockState) -> FastAPI:
         with state.lock:
             state.stats["login_attempts"] += 1
             config = dict(state.config)
+        if (failed := failure()) is not None:
+            return failed
         if config["require_verification"]:
             return JSONResponse({"ok": False, "message": "Enter the verification code we sent to your email."})
         if config["invalid_credentials"] or body.get("email") != MOCK_EMAIL or body.get("password") != MOCK_PASSWORD:
@@ -118,6 +141,8 @@ def create_app(state: MockState) -> FastAPI:
     async def interpreter_scheduled(request: Request, client: str):
         if not signed_in(request):
             return unauthorized()
+        if (failed := failure(schedule=True)) is not None:
+            return failed
         start, end = in_range(await request.json(), "filterBy")
         await asyncio.sleep(state.config["loading_delay_ms"] / 2000)
         result: dict = {}
@@ -135,6 +160,8 @@ def create_app(state: MockState) -> FastAPI:
     async def open_work_order_count(request: Request, client: str):
         if not signed_in(request):
             return unauthorized()
+        if (failed := failure()) is not None:
+            return failed
         start, end = in_range(await request.json(), "filter")
         await asyncio.sleep(state.config["loading_delay_ms"] / 2000)
         with state.lock:
@@ -153,6 +180,8 @@ def create_app(state: MockState) -> FastAPI:
     async def calendar(request: Request, year: int, month: int):
         if not signed_in(request):
             return unauthorized()
+        if (failed := failure()) is not None:
+            return failed
         await asyncio.sleep(state.config["loading_delay_ms"] / 1000)
         prefix = f"{year:04d}-{month:02d}-"
         with state.lock:
