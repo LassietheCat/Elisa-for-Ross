@@ -40,11 +40,17 @@ async def signed_in(settings) -> SiteSession:
     return session
 
 
-async def test_check_reads_both_months_and_changes_nothing(mock, settings):
-    mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-11-03", "PM", "assigned")])
+async def test_check_reads_three_months_and_changes_nothing(mock, settings):
+    mock.set_work_orders([
+        wo("2026-10-14", "AM", "available"),
+        wo("2026-11-03", "PM", "assigned"),
+        wo("2026-12-17", "AM", "available"),
+    ])
     slots = await run_check(settings, Selectors(), now=fixed_now)
+    assert len(slots) == (31 + 30 + 31) * 2
     assert slots[S("2026-10-14 AM")].available == 1
     assert slots[S("2026-11-03 PM")].assigned == 1
+    assert slots[S("2026-12-17 AM")].available == 1
     assert not settings.state_path.exists()
     assert mock.stats()["details_opened"] == 0
     assert mock.stats()["logouts"] == 1
@@ -87,14 +93,35 @@ async def test_live_run_accepts_both_months_and_sends_one_alert(mock, tmp_path):
     assert report.results == [] and len(capture.messages) == 1
 
 
-async def test_skips_a_slot_where_the_owner_already_has_a_job(mock, tmp_path):
+async def test_opening_two_months_ahead_is_found(mock, settings):
+    capture = Capture()
+    await run(settings, capture)
+    mock.set_work_orders([wo("2026-12-10", "AM", "available")])
+    report = await run(settings, capture)
+    assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-12-10 AM", ApplyOutcome.TEST_MODE)]
+    assert capture.messages[0].subject == "Elisa: test mode, opening Thu Dec 10 AM"
+
+
+async def test_skips_a_slot_where_the_owner_already_has_a_job_and_says_so(mock, tmp_path):
     settings = make_settings(tmp_path, mock.base_url, test_mode=False)
     capture = Capture()
     await run(settings, capture)
     mock.set_work_orders([wo("2026-10-15", "AM", "assigned"), wo("2026-10-15", "AM", "available")])
     report = await run(settings, capture)
     assert report.results == [] and report.skipped_booked == [S("2026-10-15 AM")]
-    assert mock.stats()["accept_calls"] == [] and capture.messages == []
+    assert mock.stats()["accept_calls"] == []
+    assert capture.messages == [
+        Message("Elisa: opening Thu Oct 15 AM (already booked)", "Skipped, you already have a job then: Thu Oct 15 AM.")
+    ]
+
+
+async def test_skipped_alert_can_be_turned_off(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False, notify_skipped=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.set_work_orders([wo("2026-10-15", "AM", "assigned"), wo("2026-10-15", "AM", "available")])
+    report = await run(settings, capture)
+    assert report.skipped_booked == [S("2026-10-15 AM")] and capture.messages == []
 
 
 async def test_nothing_private_is_stored_logged_or_sent(mock, tmp_path, caplog):
@@ -181,7 +208,8 @@ async def test_an_accept_is_still_reported_when_the_other_month_fails(mock, tmp_
     session = await signed_in(settings)
     try:
         await run(settings, capture, session)
-        mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-11-03", "PM", "available")])
+        openings = {"2026-10-14 AM", "2026-11-03 PM", "2026-12-03 PM"}
+        mock.set_work_orders([wo(*slot.split(" "), "available") for slot in sorted(openings)])
         mock.configure(schedule_error_times=1, schedule_error_after=1)
         with pytest.raises(DataRequestFailed):
             await run(settings, capture, session)
@@ -191,7 +219,7 @@ async def test_an_accept_is_still_reported_when_the_other_month_fails(mock, tmp_
         assert capture.messages == [Message(f"Elisa: applied {label}", f"Applied: {label}.")]
 
         report = await run(settings, capture, session)
-        assert [str(r.slot) for r in report.results] == sorted({"2026-10-14 AM", "2026-11-03 PM"} - set(applied))
+        assert sorted(str(r.slot) for r in report.results) == sorted(openings - set(applied))
         assert len(capture.messages) == 2
     finally:
         await session.close()

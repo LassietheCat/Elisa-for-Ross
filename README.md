@@ -7,7 +7,7 @@ and AM/PM.
 
 It does with the owner's own sign-in what the owner otherwise does by hand: sign
 in, open Open Work Orders, click **Available** to reload the calendar, look at this
-month and next month, open an opening and click **Accept**.
+month and the next two (`MONTHS_TO_CHECK=3`), open an opening and click **Accept**.
 
 The Accept step is based on the Elisa phone app (an Accept button per work order).
 The desktop version hasn't been seen on the live site yet, so keep `TEST_MODE=true`
@@ -29,7 +29,7 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 .venv/bin/python -m elisa_bot control          # the password-protected on/off page (see below)
 .venv/bin/python -m elisa_bot on | off         # switch the bot on or off from the command line
 .venv/bin/python -m elisa_bot status           # the switch and the last check
-.venv/bin/python -m elisa_bot check            # sign in, show both months (read-only: clicks nothing)
+.venv/bin/python -m elisa_bot check            # sign in, show the months it checks (read-only: clicks nothing)
 .venv/bin/python -m elisa_bot site-check       # read-only: does the reader fit the live page? (see below)
 .venv/bin/python -m elisa_bot once             # one full run (test mode unless TEST_MODE=false)
 .venv/bin/python -m elisa_bot once --live      # one full run that really clicks Accept
@@ -87,15 +87,43 @@ Sign-in uses a signed, HttpOnly, SameSite=Strict cookie that lasts 30 days. Form
 CSRF token, wrong passwords are limited to 5 per 15 minutes, and the page sends strict
 security headers. Serve it over HTTPS (`CONTROL_COOKIE_SECURE=true`).
 
-### Alerts from the client's email account
+### Email alerts
 
-Set `SMTP_PROVIDER` (`gmail`, `outlook`, `aol`, `yahoo`, `icloud`), the account in
-`SMTP_USERNAME`, and an **app password** in `SMTP_PASSWORD`. The alert is then sent
-from that address with the sender name `SMTP_FROM_NAME` ("Elisa Bot" by default).
-Gmail, AOL, Yahoo and iCloud require an app password, created in the account's
-security settings, rather than the normal password. For other providers leave
-`SMTP_PROVIDER` empty and set `SMTP_HOST`, `SMTP_PORT`, `SMTP_SSL` and
-`SMTP_STARTTLS`. Check it with `test-email` or the page's **Send test alert** button.
+Alerts go out from the inbox in `SMTP_USERNAME`, with the sender name `SMTP_FROM_NAME`
+("Elisa Bot" by default), to the addresses in `ALERT_EMAIL_TO`. Check the setup with
+`test-email` or the page's **Send test alert** button.
+
+**AgentMail** (the client's alert inbox, `anya-alerts@agentmail.to`):
+
+```
+SMTP_PROVIDER=agentmail
+SMTP_USERNAME=anya-alerts@agentmail.to
+SMTP_PASSWORD=<AgentMail API key>
+```
+
+The SMTP password is an **API key** from console.agentmail.to → API Keys, not the
+console sign-in password. The key is shown only once, so keep it in `.env` or a
+`SMTP_PASSWORD_FILE` secret. AgentMail sends over port 465 with TLS, and the sender
+must be the inbox address.
+
+**A normal mailbox:** set `SMTP_PROVIDER` (`gmail`, `outlook`, `aol`, `yahoo`,
+`icloud`), the address in `SMTP_USERNAME`, and an **app password** in
+`SMTP_PASSWORD`. Gmail, AOL, Yahoo and iCloud require one, created in the account's
+security settings. For other providers leave `SMTP_PROVIDER` empty and set
+`SMTP_HOST`, `SMTP_PORT`, `SMTP_SSL` and `SMTP_STARTTLS`.
+
+**Which alerts go out** (all on, as the client asked):
+
+| Alert | When | Setting |
+|---|---|---|
+| Applied | the bot accepted a job | always |
+| Please check | Accept was clicked but the result couldn't be confirmed | always |
+| Test mode, opening | test mode found an opening and its Accept button | always |
+| Missed | an opening was taken by someone else first | `NOTIFY_MISSED` |
+| Skipped | a new opening where the owner already has a job | `NOTIFY_SKIPPED` |
+| Bot switched off | Elisa rejected the sign-in; the bot stopped itself | always |
+| Bot can't check right now | 3 checks in a row failed | always |
+| Bot is working again | checks work again after that alert | always |
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the
@@ -104,11 +132,11 @@ credentials first).
 ### site-check
 
 A read-only check that the reader fits the live Elisa page. It signs in, opens Open
-Work Orders, reloads with **Available**, reads this month and next month, then signs
+Work Orders, reloads with **Available**, reads every month it checks, then signs
 out. It never opens an opening or clicks Accept. It reports:
 
 - each step: sign-in, the tab, the four status filter buttons, whether a reload's
-  loading state was seen, and both months, with every day's AM and PM blocks found;
+  loading state was seen, and each month, with every day's AM and PM blocks found;
 - a **cross-check**: the calendar page itself asks the site for the owner's jobs per
   day (Applied / Assigned / Confirmed, AM and PM). The check compares that with what
   the reader saw, half-day by half-day, and lists any difference;
@@ -125,9 +153,10 @@ it again.
 2. Clicks **Available** to reload the calendar, waiting until the reload has
    finished. The old calendar stays on screen while the site loads, so it is never
    read as new.
-3. For this month, then next month: reads every day's AM and PM tags, works out
-   the new openings, and accepts them **before** reading the next month (first
-   come, first served).
+3. For each month checked (this month and the next two), starting with the one on
+   screen: reads every day's AM and PM tags, works out the new openings, and
+   accepts them **before** moving to the next month (first come, first served).
+   Starting from the month on screen keeps it to one page load per month.
 4. Saves state to `data/state.json` and sends **one** email for the whole run, or
    nothing if nothing happened.
 

@@ -17,6 +17,7 @@ SMTP_PRESETS: dict[str, tuple[str, int, bool]] = {
     "aol": ("smtp.aol.com", 465, True),
     "yahoo": ("smtp.mail.yahoo.com", 465, True),
     "icloud": ("smtp.mail.me.com", 587, False),
+    "agentmail": ("smtp.agentmail.to", 465, True),
 }
 
 
@@ -105,6 +106,7 @@ class Settings:
     apply_on_first_run: bool = False
     max_applies_per_day: int = 10
     max_attempts_per_slot: int = 2
+    months_to_check: int = 3
 
     poll_seconds: int = 15
     min_poll_seconds: int = 15
@@ -113,7 +115,7 @@ class Settings:
     max_sign_ins_per_hour: int = 6
 
     notify_missed: bool = True
-    notify_skipped: bool = False
+    notify_skipped: bool = True
     smtp_provider: str | None = None
     smtp_host: str | None = None
     smtp_port: int = 587
@@ -174,13 +176,14 @@ class Settings:
             apply_on_first_run=e.boolean("APPLY_ON_FIRST_RUN", False),
             max_applies_per_day=e.integer("MAX_APPLIES_PER_DAY", 10, lo=0),
             max_attempts_per_slot=e.integer("MAX_ATTEMPTS_PER_SLOT", 2, lo=1),
+            months_to_check=e.integer("MONTHS_TO_CHECK", 3, lo=1, hi=6),
             poll_seconds=poll,
             min_poll_seconds=min_poll,
             max_poll_seconds=max_poll,
             logout_when_off=e.boolean("LOGOUT_WHEN_OFF", True),
             max_sign_ins_per_hour=e.integer("MAX_SIGN_INS_PER_HOUR", 6, lo=1, hi=60),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
-            notify_skipped=e.boolean("NOTIFY_SKIPPED", False),
+            notify_skipped=e.boolean("NOTIFY_SKIPPED", True),
             smtp_provider=provider,
             smtp_host=e.text("SMTP_HOST") or preset_host,
             smtp_port=e.integer("SMTP_PORT", preset_port, lo=1, hi=65535),

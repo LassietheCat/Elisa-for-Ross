@@ -25,10 +25,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="elisa-bot", description="Elisa Open Work Orders bot.")
     parser.add_argument("--env-file", default=".env", help="settings file (default: .env)")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("check", help="sign in and show what this month and next month look like (read-only)")
+    sub.add_parser("check", help="sign in and show the months the bot checks (read-only)")
     sub.add_parser(
         "site-check",
-        help="read-only check that the reader fits the live page: structure, both months, cross-check with the site's data",
+        help="read-only check that the reader fits the live page: structure, each month checked, cross-check with the site's data",
     )
     once = sub.add_parser("once", help="one full run: read, find new openings, accept, alert")
     mode = once.add_mutually_exclusive_group()

@@ -32,8 +32,17 @@ class CycleReport:
     notified: bool = False
 
 
-def target_months(today: dt.date) -> list[tuple[int, int]]:
-    return [(today.year, today.month), add_months(today.year, today.month, 1)]
+def target_months(today: dt.date, count: int) -> list[tuple[int, int]]:
+    return [add_months(today.year, today.month, offset) for offset in range(count)]
+
+
+def reading_order(months: list[tuple[int, int]], displayed: tuple[int, int]) -> list[tuple[int, int]]:
+    if displayed not in months:
+        return list(months)
+    index = months.index(displayed)
+    if index == len(months) - 1:
+        return list(reversed(months))
+    return [displayed, *months[index + 1 :], *reversed(months[:index])]
 
 
 def _clock(settings: Settings, now: Clock | None) -> Clock:
@@ -48,7 +57,7 @@ async def run_check(settings: Settings, selectors: Selectors, *, now: Clock | No
         await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         await reader.refresh()
-        slots = await reader.read_months(target_months(clock().date()))
+        slots = await reader.read_months(target_months(clock().date(), settings.months_to_check))
         session.raise_for_problems()
         return slots
     finally:
@@ -81,9 +90,7 @@ async def run_once(
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
         displayed = await reader.refresh()
         session.raise_for_problems()
-        months = target_months(today)
-        months.sort(key=lambda month: month != displayed)
-        for year, month in months:
+        for year, month in reading_order(target_months(today, settings.months_to_check), displayed):
             await reader.go_to_month(year, month)
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
