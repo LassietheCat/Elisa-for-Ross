@@ -80,3 +80,14 @@ def test_zero_cap_means_no_cap():
 def test_used_up_tries_are_not_retried():
     state = BotState(baseline_done=True, attempts={"2026-10-14 AM": 2})
     assert plan_month({S("2026-10-14 AM"): open_()}, state, today=TODAY, settings=Settings()).to_apply == []
+
+
+def test_three_months_are_checked_and_read_from_the_month_on_screen():
+    from elisa_bot.cycle import reading_order, target_months
+
+    months = target_months(dt.date(2026, 11, 20), 3)
+    assert months == [(2026, 11), (2026, 12), (2027, 1)]
+    assert reading_order(months, (2026, 11)) == [(2026, 11), (2026, 12), (2027, 1)]
+    assert reading_order(months, (2027, 1)) == [(2027, 1), (2026, 12), (2026, 11)]
+    assert reading_order(months, (2026, 12)) == [(2026, 12), (2027, 1), (2026, 11)]
+    assert reading_order(months, (2026, 10)) == months

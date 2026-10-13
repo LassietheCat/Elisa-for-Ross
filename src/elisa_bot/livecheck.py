@@ -13,12 +13,13 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import Response
 
 from .config import Settings
+from .cycle import target_months
 from .models import Half, MonthReading, Slot
 from .site.calendar import CalendarReader
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
-from .timeutil import add_months, days_in_month, now_in
+from .timeutil import days_in_month, now_in
 
 log = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ def compare_with_site(
 async def run_site_check(settings: Settings, selectors: Selectors, *, now: Callable[[], dt.datetime] | None = None) -> SiteCheckReport:
     clock = now or (lambda: now_in(settings.timezone))
     today = clock().date()
-    months = [(today.year, today.month), add_months(today.year, today.month, 1)]
+    months = target_months(today, settings.months_to_check)
     report = SiteCheckReport()
     session = SiteSession(settings, selectors)
     data = SiteData(selectors)

@@ -108,3 +108,18 @@ def test_control_secrets_are_checked_and_hidden():
     settings = Settings.from_env({"CONTROL_PASSWORD": "pw-123", "CONTROL_SECRET_KEY": "k" * 32})
     settings.require_control_secrets()
     assert "pw-123" not in repr(settings) and "pw-123" in settings.secret_values()
+
+
+def test_client_choices_are_the_defaults():
+    settings = Settings.from_env({})
+    assert settings.months_to_check == 3
+    assert settings.notify_missed is True and settings.notify_skipped is True
+    assert Settings.from_env({"MONTHS_TO_CHECK": "2"}).months_to_check == 2
+    with pytest.raises(ConfigError, match="MONTHS_TO_CHECK"):
+        Settings.from_env({"MONTHS_TO_CHECK": "0"})
+
+
+def test_agentmail_preset():
+    settings = Settings.from_env({"SMTP_PROVIDER": "agentmail", "SMTP_USERNAME": "anya-alerts@agentmail.to"})
+    assert (settings.smtp_host, settings.smtp_port, settings.smtp_ssl, settings.smtp_starttls) == ("smtp.agentmail.to", 465, True, False)
+    assert settings.smtp_from == "anya-alerts@agentmail.to"

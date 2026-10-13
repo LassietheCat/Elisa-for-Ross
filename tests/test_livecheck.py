@@ -49,6 +49,8 @@ async def test_site_check_passes_when_the_reader_fits(mock, settings):
         wo("2026-10-27", "PM", "available"),
         wo("2026-11-03", "AM", "available"),
         wo("2026-11-16", "PM", "assigned"),
+        wo("2026-12-03", "PM", "available"),
+        wo("2026-12-10", "AM", "confirmed"),
     ])
     report = await run_site_check(settings, Selectors(), now=fixed_now)
     names = [step.name for step in report.steps]
@@ -61,13 +63,16 @@ async def test_site_check_passes_when_the_reader_fits(mock, settings):
         "October 2026: cross-check with the site's data",
         "November 2026",
         "November 2026: cross-check with the site's data",
+        "December 2026",
+        "December 2026: cross-check with the site's data",
         "Sign-out",
     ]
     assert report.ok, report
     assert report.warnings == []
     assert "loading detected" in report.steps[3].detail
     assert report.steps[4].detail == "31 days; 1 available, 1 applied, 4 assigned, 1 confirmed"
-    assert sorted(report.openings) == [S("2026-10-27 PM"), S("2026-11-03 AM")]
+    assert report.steps[8].detail == "31 days; 1 available, 0 applied, 0 assigned, 1 confirmed"
+    assert sorted(report.openings) == [S("2026-10-27 PM"), S("2026-11-03 AM"), S("2026-12-03 PM")]
     stats = mock.stats()
     assert stats["logouts"] == 1 and stats["details_opened"] == 0 and stats["accept_calls"] == []
 
@@ -80,6 +85,7 @@ async def test_site_check_lists_differences(mock, settings):
     assert report.mismatches == [
         "2026-10-20 AM: the site's data says 1 assigned, the calendar shows 0",
         "2026-11-20 AM: the site's data says 1 assigned, the calendar shows 0",
+        "2026-12-20 AM: the site's data says 1 assigned, the calendar shows 0",
     ]
 
 
