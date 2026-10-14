@@ -8,9 +8,9 @@ from typing import Callable
 from playwright.async_api import Error as PlaywrightError
 
 from .config import Settings
-from .cycle import run_once
+from .cycle import run_once, target_months
 from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
-from .site.errors import InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
+from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
 from .state import ControlStore
@@ -31,6 +31,21 @@ def next_delay(failures: int, poll_seconds: int, *, busy: bool = False, retry_af
         return min(MAX_BACKOFF_S, poll_seconds * 2 ** min(failures, 5))
     delay = min(MAX_BUSY_BACKOFF_S, poll_seconds * 2 ** min(failures + 1, 8))
     return max(delay, min(retry_after or 0, MAX_RETRY_AFTER_S))
+
+
+class MonthRotation:
+    def __init__(self) -> None:
+        self.step = 0
+
+    def reset(self) -> None:
+        self.step = 0
+
+    def next(self, months: list[tuple[int, int]]) -> tuple[int, int]:
+        count = len(months)
+        pattern = list(range(count)) + list(range(count - 2, 0, -1))
+        target = months[pattern[self.step % len(pattern)]]
+        self.step += 1
+        return target
 
 
 class FailureAlerts:
@@ -70,6 +85,7 @@ async def run_forever(
     controls = ControlStore(settings)
     sign_ins = SignInLimiter(settings.max_sign_ins_per_hour)
     alerts = FailureAlerts(notifier)
+    rotation = MonthRotation()
     loop = asyncio.get_running_loop()
     session: SiteSession | None = None
     switched_on: bool | None = None
@@ -92,11 +108,17 @@ async def run_forever(
             started = loop.time()
             busy = False
             retry_after = None
+            at_least = 0
             try:
                 if session is None:
                     session = SiteSession(settings, selectors, sign_ins=sign_ins)
                     await session.start()
-                await run_once(settings, selectors, notifier=notifier, now=clock, session=session)
+                    rotation.reset()
+                month = rotation.next(target_months(clock().date(), settings.months_to_check))
+                report = await run_once(settings, selectors, notifier=notifier, now=clock, session=session, month=month)
+                if report.signed_in:
+                    at_least = settings.quiet_after_sign_in_seconds
+                    started = loop.time()
                 await alerts.succeeded()
             except (InvalidCredentials, VerificationRequired) as exc:
                 log.warning("Elisa did not accept the sign-in (%s); switching the bot off", exc.code)
@@ -106,12 +128,17 @@ async def run_forever(
                 continue
             except (SiteBusy, SignInPaused) as exc:
                 busy, retry_after = True, exc.retry_after
+                started = loop.time()
                 await alerts.failed(exc.code)
-                log.warning("Check failed (%s), %d in a row; waiting longer", exc.code, alerts.failures)
+                log.warning("Check failed (%s), %d in a row; waiting longer: %s", exc.code, alerts.failures, exc)
             except SiteError as exc:
                 await alerts.failed(exc.code)
-                log.warning("Check failed (%s), %d in a row", exc.code, alerts.failures)
-                session = await _recover(session, settings, selectors)
+                log.warning("Check failed (%s), %d in a row: %s", exc.code, alerts.failures, exc)
+                if not isinstance(exc, DataRequestFailed):
+                    session = await _recover(session, settings, selectors)
+                    rotation.reset()
+                    at_least = settings.quiet_after_sign_in_seconds
+                    started = loop.time()
             except PlaywrightError as exc:
                 await alerts.failed("browser_error")
                 log.warning(
@@ -122,7 +149,9 @@ async def run_forever(
                 await alerts.failed("unexpected_error")
                 log.exception("Unexpected error, %d in a row; restarting the browser", alerts.failures)
                 session = await _shut(session, logout=False)
-            await _wait_for_next(stop, controls, started, alerts.failures, busy=busy, retry_after=retry_after)
+            await _wait_for_next(
+                stop, controls, started, alerts.failures, busy=busy, retry_after=retry_after, at_least=at_least
+            )
     finally:
         if session is not None:
             await _shut(session, logout=settings.logout_when_off)
@@ -154,13 +183,14 @@ async def _wait_for_next(
     *,
     busy: bool = False,
     retry_after: int | None = None,
+    at_least: int = 0,
 ) -> None:
     loop = asyncio.get_running_loop()
     while not stop.is_set():
         control = controls.load()
         if not control.enabled:
             return
-        delay = next_delay(failures, control.poll_seconds, busy=busy, retry_after=retry_after)
+        delay = max(at_least, next_delay(failures, control.poll_seconds, busy=busy, retry_after=retry_after))
         remaining = started + delay - loop.time()
         if remaining <= 0:
             return

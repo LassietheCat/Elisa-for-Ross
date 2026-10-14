@@ -30,6 +30,12 @@ class CycleReport:
     results: list[ApplyResult] = field(default_factory=list)
     skipped_booked: list[Slot] = field(default_factory=list)
     notified: bool = False
+    months_read: list[tuple[int, int]] = field(default_factory=list)
+    signed_in: bool = False
+
+
+def month_key(month: tuple[int, int]) -> str:
+    return f"{month[0]:04d}-{month[1]:02d}"
 
 
 def target_months(today: dt.date, count: int) -> list[tuple[int, int]]:
@@ -72,6 +78,7 @@ async def run_once(
     notifier: Notifier | None = None,
     now: Clock | None = None,
     session: SiteSession | None = None,
+    month: tuple[int, int] | None = None,
 ) -> CycleReport:
     clock = _clock(settings, now)
     store = StateStore(settings.state_path)
@@ -80,24 +87,43 @@ async def run_once(
     own_session = session is None
     session = session or SiteSession(settings, selectors)
     today = clock().date()
+    window = target_months(today, settings.months_to_check)
+    if not state.baseline_done and not state.baseline_pending:
+        state.baseline_pending = [month_key(m) for m in window]
     report = CycleReport()
+    baselines: list[bool] = []
     try:
         if not session.started:
             await session.start()
         session.clear_problems()
-        await session.ensure_ready()
+        calendar_was_showing = await session.calendar_visible()
+        report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
-        displayed = await reader.refresh()
-        session.raise_for_problems()
-        for year, month in reading_order(target_months(today, settings.months_to_check), displayed):
-            await reader.go_to_month(year, month)
+        if month is None:
+            displayed = await reader.refresh()
+            session.raise_for_problems()
+            months = reading_order(window, displayed)
+        else:
+            if calendar_was_showing and await reader.displayed_month() == month:
+                await reader.refresh()
+            months = [month]
+        for year, month_number in months:
+            await reader.go_to_month(year, month_number)
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
-            plan = plan_month(reading.slots, state, today=today, settings=settings, already_planned=len(report.results))
+            plan = plan_month(
+                reading.slots,
+                state,
+                today=today,
+                settings=settings,
+                already_planned=len(report.results),
+                baseline=month_key((year, month_number)) in state.baseline_pending,
+            )
+            report.months_read.append((year, month_number))
+            baselines.append(plan.baseline_only)
             report.available |= plan.available
             report.new |= plan.new
-            report.baseline_only = plan.baseline_only
             report.skipped_booked += plan.skipped_booked
             for slot in plan.to_apply:
                 result = await applier.apply_one(slot)
@@ -108,13 +134,11 @@ async def run_once(
     except Exception as exc:
         error = exc if isinstance(exc, SiteError) else None
         if not isinstance(exc, (InvalidCredentials, VerificationRequired)):
-            # A rate limit or failed data request explains a broken page better than the timeout it caused.
             error = session.problem() or error
         state.last_run_at = to_iso(clock())
         state.last_run_ok = False
         state.last_error = error.code if error is not None else "unexpected_error"
         store.save(state)
-        # A clicked slot is never handled again, so report it now or it is never reported.
         clicked = [result for result in report.results if result.clicked]
         if clicked:
             report.notified = await _notify(notifier, settings, clicked, ())
@@ -126,9 +150,21 @@ async def run_once(
             await session.logout()
             await session.close()
 
+    report.baseline_only = bool(baselines) and all(baselines)
     retry = _retry_next_time(report.results, state, settings)
-    state.seen = sorted(str(slot) for slot in report.available - retry)
-    state.baseline_done = True
+    read_keys = {month_key(m) for m in report.months_read}
+    other_months = {month_key(m) for m in window} - read_keys
+    kept = {slot for slot in state.seen_slots() if month_key((slot.date.year, slot.date.month)) in other_months}
+    state.seen = sorted(str(slot) for slot in kept | (report.available - retry))
+    state.baseline_pending = [key for key in state.baseline_pending if key in other_months]
+    state.baseline_done = not state.baseline_pending
+    log.info(
+        "Checked %s: %d open, %d new%s",
+        ", ".join(sorted(read_keys)),
+        len(report.available),
+        len(report.new),
+        " (first look, recorded only)" if report.baseline_only else "",
+    )
     state.last_run_at = to_iso(clock())
     state.last_run_ok = True
     state.last_error = None

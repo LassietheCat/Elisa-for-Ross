@@ -22,6 +22,7 @@ STATE_VERSION = 1
 class BotState:
     version: int = STATE_VERSION
     baseline_done: bool = False
+    baseline_pending: list[str] = field(default_factory=list)
     seen: list[str] = field(default_factory=list)
     applied: dict[str, str] = field(default_factory=dict)
     attempts: dict[str, int] = field(default_factory=dict)

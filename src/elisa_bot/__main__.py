@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .config import ConfigError, Settings
 from .cycle import CycleReport, run_check, run_once
-from .livecheck import SiteCheckReport, run_site_check
+from .livecheck import SiteCheckReport, run_site_check, site_check_seconds
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
 from .notify import build_notifier, test_message
@@ -170,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             _print_slots(asyncio.run(run_check(settings, selectors)))
         elif args.command == "site-check":
+            minutes = max(1, round(site_check_seconds(settings) / 60))
+            print(f"Checking {settings.months_to_check} months, pausing between page loads to stay under "
+                  f"Elisa's request limit. This takes about {minutes} minute(s).", flush=True)
             report = asyncio.run(run_site_check(settings, selectors))
             _print_site_check(report)
             return 0 if report.ok else 1

@@ -10,9 +10,10 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 from elisa_bot import service
+from elisa_bot.cycle import CycleReport
 from elisa_bot.notify import Message
-from elisa_bot.service import FailureAlerts, next_delay, run_forever
-from elisa_bot.site.errors import SignInPaused
+from elisa_bot.service import FailureAlerts, MonthRotation, next_delay, run_forever
+from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignInPaused, SiteBusy
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
 from elisa_bot.state import ControlStore, StateStore
@@ -44,7 +45,7 @@ async def until(predicate: Callable[[], bool], timeout: float = 60.0) -> None:
 
 
 def fast(settings):
-    return dataclasses.replace(settings, poll_seconds=1, min_poll_seconds=1)
+    return dataclasses.replace(settings, poll_seconds=1, min_poll_seconds=1, quiet_after_sign_in_seconds=0)
 
 
 def start(settings, capture):
@@ -149,6 +150,84 @@ async def test_a_browser_that_will_not_start_does_not_stop_the_bot(monkeypatch, 
         await asyncio.wait_for(task, 30)
 
 
+class IdlePage:
+    def __init__(self) -> None:
+        self.reloads = 0
+
+    async def goto(self, *args, **kwargs) -> None:
+        self.reloads += 1
+
+
+class IdleSession(BrokenBrowserSession):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__()
+        self.page = IdlePage()
+
+    async def start(self) -> None:
+        self.started = True
+
+
+async def after_a_slow_check(monkeypatch, settings, finish) -> tuple[float, int]:
+    loop = asyncio.get_running_loop()
+    starts: list[float] = []
+    ends: list[float] = []
+    pages: set[IdlePage] = set()
+
+    async def slow_check(*args, **kwargs):
+        pages.add(kwargs["session"].page)
+        starts.append(loop.time())
+        await asyncio.sleep(1)
+        ends.append(loop.time())
+        return finish()
+
+    monkeypatch.setattr(service, "SiteSession", IdleSession)
+    monkeypatch.setattr(service, "run_once", slow_check)
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    stop, task = start(settings, Capture())
+    try:
+        await until(lambda: len(starts) == 2)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+    return starts[1] - ends[0], sum(page.reloads for page in pages)
+
+
+def refused():
+    raise SiteBusy("the site answered 429 Too Many Requests")
+
+
+def page_broke():
+    raise CalendarNotRendered("timed out waiting for the calendar to finish loading")
+
+
+def data_failed():
+    raise DataRequestFailed("a calendar data request failed (500)")
+
+
+def quiet(tmp_path, seconds: int = 3):
+    return dataclasses.replace(fast(make_settings(tmp_path, "http://127.0.0.1:9")), quiet_after_sign_in_seconds=seconds)
+
+
+async def test_a_busy_site_gets_the_whole_wait_after_a_slow_check(monkeypatch, tmp_path):
+    gap, reloads = await after_a_slow_check(monkeypatch, fast(make_settings(tmp_path, "http://127.0.0.1:9")), refused)
+    assert gap >= next_delay(1, 1, busy=True) and reloads == 0
+
+
+async def test_the_quiet_period_starts_when_the_sign_in_check_ends(monkeypatch, tmp_path):
+    gap, _ = await after_a_slow_check(monkeypatch, quiet(tmp_path), lambda: CycleReport(signed_in=True))
+    assert gap >= 3
+
+
+async def test_reloading_the_page_after_a_failed_check_is_followed_by_the_quiet_period(monkeypatch, tmp_path):
+    gap, reloads = await after_a_slow_check(monkeypatch, quiet(tmp_path), page_broke)
+    assert gap >= 3 and reloads >= 1
+
+
+async def test_a_failed_data_request_is_retried_without_reloading_the_page(monkeypatch, tmp_path):
+    _, reloads = await after_a_slow_check(monkeypatch, quiet(tmp_path), data_failed)
+    assert reloads == 0
+
+
 @pytest.mark.browser
 async def test_switch_controls_the_always_on_bot(mock, tmp_path):
     settings = fast(make_settings(tmp_path, mock.base_url))
@@ -208,6 +287,24 @@ async def test_failed_check_backs_off_then_recovers_without_signing_in_again(moc
         assert StateStore(settings.state_path).load().last_error == "calendar_not_rendered"
         await until(lambda: StateStore(settings.state_path).load().last_run_ok is True)
         assert mock.stats()["logins_ok"] == 1
+        assert mock.stats()["dashboard_loads"] > 1
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.browser
+async def test_a_failed_data_request_is_retried_on_the_same_page(mock, tmp_path):
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    store = StateStore(settings.state_path)
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    stop, task = start(settings, Capture())
+    try:
+        await until(lambda: store.load().baseline_done)
+        mock.configure(schedule_error_times=1)
+        await until(lambda: store.load().last_error == "data_request_failed")
+        await until(lambda: store.load().last_run_ok is True)
+        assert mock.stats()["dashboard_loads"] == 1 and mock.stats()["logins_ok"] == 1
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
@@ -235,6 +332,53 @@ async def test_forced_failures_send_exactly_one_alert_then_recover(mock, tmp_pat
         assert StateStore(settings.state_path).load().last_run_ok is True
         assert mock.stats()["logins_ok"] == 1
         assert mock.stats()["accept_calls"] == []
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+def test_month_rotation_moves_one_month_at_a_time():
+    months = [(2026, 10), (2026, 11), (2026, 12)]
+    rotation = MonthRotation()
+    assert [rotation.next(months) for _ in range(8)] == [(2026, 10), (2026, 11), (2026, 12), (2026, 11)] * 2
+    single = MonthRotation()
+    assert [single.next([(2026, 10)]) for _ in range(3)] == [(2026, 10)] * 3
+
+
+@pytest.mark.browser
+async def test_always_on_bot_loads_one_month_per_check(mock, tmp_path):
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    stop, task = start(settings, Capture())
+    try:
+        await until(lambda: len(mock.stats()["calendar_months"]) >= 7)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+    assert mock.stats()["calendar_months"][:7] == [
+        "2026-10", "2026-11", "2026-12", "2026-11", "2026-10", "2026-11", "2026-12",
+    ]
+    assert mock.stats()["logins_ok"] == 1
+
+
+@pytest.mark.browser
+async def test_openings_already_listed_in_any_month_are_only_recorded(mock, tmp_path):
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    already = [wo("2026-11-05", "AM", "available"), wo("2026-12-08", "PM", "available")]
+    mock.set_work_orders(already)
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: StateStore(settings.state_path).load().baseline_done)
+        assert capture.messages == []
+        assert StateStore(settings.state_path).load().seen == ["2026-11-05 AM", "2026-12-08 PM"]
+        mock.set_work_orders([*already, wo("2026-10-21", "PM", "available")])
+        await until(lambda: len(capture.messages) == 1)
+        assert capture.messages[0].subject == "Elisa: test mode, opening Wed Oct 21 PM"
+        loads = len(mock.stats()["calendar_months"])
+        await until(lambda: len(mock.stats()["calendar_months"]) >= loads + 4)
+        assert len(capture.messages) == 1
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)

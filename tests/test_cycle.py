@@ -29,8 +29,8 @@ class Capture:
         return True
 
 
-async def run(settings, capture, session=None):
-    return await run_once(settings, Selectors(), notifier=capture, now=fixed_now, session=session)
+async def run(settings, capture, session=None, month=None):
+    return await run_once(settings, Selectors(), notifier=capture, now=fixed_now, session=session, month=month)
 
 
 async def signed_in(settings) -> SiteSession:
@@ -221,5 +221,36 @@ async def test_an_accept_is_still_reported_when_the_other_month_fails(mock, tmp_
         report = await run(settings, capture, session)
         assert sorted(str(r.slot) for r in report.results) == sorted(openings - set(applied))
         assert len(capture.messages) == 2
+    finally:
+        await session.close()
+
+
+async def test_single_month_checks_load_once_and_keep_the_other_months_memory(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url)
+    capture = Capture()
+    mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-11-03", "PM", "available")])
+    session = await signed_in(settings)
+    store = StateStore(settings.state_path)
+    try:
+        report = await run(settings, capture, session, month=(2026, 10))
+        assert report.months_read == [(2026, 10)] and report.baseline_only
+        state = store.load()
+        assert state.seen == ["2026-10-14 AM"] and state.baseline_pending == ["2026-11", "2026-12"]
+        assert not state.baseline_done
+
+        await run(settings, capture, session, month=(2026, 11))
+        await run(settings, capture, session, month=(2026, 12))
+        state = store.load()
+        assert state.seen == ["2026-10-14 AM", "2026-11-03 PM"] and state.baseline_done
+
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert report.results == [] and capture.messages == []
+        assert mock.stats()["calendar_months"] == ["2026-10", "2026-10", "2026-11", "2026-12", "2026-11"]
+
+        mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-11-03", "PM", "available"),
+                              wo("2026-11-24", "AM", "available")])
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert [str(r.slot) for r in report.results] == ["2026-11-24 AM"]
+        assert store.load().seen == ["2026-10-14 AM", "2026-11-03 PM", "2026-11-24 AM"]
     finally:
         await session.close()

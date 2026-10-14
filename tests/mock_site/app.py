@@ -56,8 +56,10 @@ class MockState:
             self.stats = {
                 "login_attempts": 0,
                 "logins_ok": 0,
+                "dashboard_loads": 0,
                 "logouts": 0,
                 "calendar_fetches": 0,
+                "calendar_months": [],
                 "details_opened": 0,
                 "accept_calls": [],
                 "rate_limited": 0,
@@ -174,6 +176,8 @@ def create_app(state: MockState) -> FastAPI:
     async def dashboard(request: Request):
         if not signed_in(request):
             return RedirectResponse("/login", status_code=302)
+        with state.lock:
+            state.stats["dashboard_loads"] += 1
         return DASHBOARD_HTML.replace("__CONFIG__", json.dumps({"today": state.config["today"]}))
 
     @app.get("/api/mock/calendar")
@@ -186,6 +190,7 @@ def create_app(state: MockState) -> FastAPI:
         prefix = f"{year:04d}-{month:02d}-"
         with state.lock:
             state.stats["calendar_fetches"] += 1
+            state.stats["calendar_months"].append(f"{year:04d}-{month:02d}")
             blank = state.config["blank_calendar_times"] > 0
             if blank:
                 state.config["blank_calendar_times"] -= 1

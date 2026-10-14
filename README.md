@@ -46,22 +46,33 @@ schedule `once` every 15 seconds; use `run` for that.
 **off**. Every second it looks at the switch (`data/control.json`):
 
 - **On:** it signs in once, keeps that session, and checks every `POLL_SECONDS`
-  (15 by default, never below `MIN_POLL_SECONDS`). Each check is one full run (see
-  "What one run does").
+  (15 by default, never below `MIN_POLL_SECONDS`). Elisa limits how many requests
+  an account can make, so **each check loads one month**, moving one month at a time:
+  Oct → Nov → Dec → Nov → Oct … With 3 months that is the middle month every 30 s and
+  the outer months every 60 s, one page load per check, never a burst. Signing in is
+  itself a burst of requests, so after a sign-in the bot reads the calendar that just
+  loaded and then waits `QUIET_AFTER_SIGN_IN_SECONDS` (90) before the next check.
+- **First look per month:** the first time each month is read after the bot starts
+  (or after `reset-state`), its openings are only recorded, never acted on
+  (`APPLY_ON_FIRST_RUN=false`). The bot remembers what it has seen month by month, so
+  reading one month never makes another month's openings look new.
 - **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
 - **Sign-in rejected** (wrong password or a verification step): it switches itself
   off, emails one alert, and never retries, so the account can't be locked out.
-- **A check fails** (page didn't load, site error): it reloads the dashboard and
-  waits longer before the next try (30 s, 60 s, … up to 5 minutes), then goes back to
-  every `POLL_SECONDS` after a good check. A browser that won't start counts as a
-  failed check too; the bot keeps going.
+- **A check fails** (the page or the calendar didn't load): it reloads the dashboard. A
+  reload is a burst of requests like a sign-in, so it waits at least
+  `QUIET_AFTER_SIGN_IN_SECONDS` before the next try, longer if failures repeat (up
+  to 5 minutes), then goes back to every `POLL_SECONDS` after a good check. A browser
+  that won't start counts as a failed check too; the bot keeps going.
 - **The site is busy** (it answers 429 Too Many Requests, at sign-in or during a
   check): the check fails and nothing is accepted. The bot waits longer than for
   other failures (1, 2, 4, 8 minutes, up to 15), or as long as the site asks in
   `Retry-After` (up to an hour).
 - **A calendar data request fails** (the site's schedule or count request returns an
   error): the check fails and nothing is accepted, because a half-loaded calendar
-  could hide a job the owner already has.
+  could hide a job the owner already has. The page itself still works, so the bot
+  doesn't reload it: the next check simply asks for the data again (after 30 s, 60 s,
+  … up to 5 minutes if it keeps failing).
 - **Sign-ins are capped** at `MAX_SIGN_INS_PER_HOUR` (6). If the site keeps signing
   the bot out, it stops signing in until the hour is up, so it never fights over the
   account or adds to the site's failed-login count.
@@ -133,7 +144,11 @@ credentials first).
 
 A read-only check that the reader fits the live Elisa page. It signs in, opens Open
 Work Orders, reloads with **Available**, reads every month it checks, then signs
-out. It never opens an opening or clicks Accept. It reports:
+out. It never opens an opening or clicks Accept. It paces itself to stay under
+Elisa's request limit: it waits `QUIET_AFTER_SIGN_IN_SECONDS` after signing in and
+`POLL_SECONDS` between months, so it takes about two minutes. A month whose data the
+site refused (for example 429 Too Many Requests) is reported as **FAIL**, never as
+an empty month. It reports:
 
 - each step: sign-in, the tab, the four status filter buttons, whether a reload's
   loading state was seen, and each month, with every day's AM and PM blocks found;
@@ -149,15 +164,19 @@ it again.
 
 ## What one run does
 
+`once` (and each check of `run`) does this; `once` covers every month checked, while
+`run` covers one month per check (see above).
+
 1. Signs in (if needed) and opens Open Work Orders.
-2. Clicks **Available** to reload the calendar, waiting until the reload has
-   finished. The old calendar stays on screen while the site loads, so it is never
-   read as new.
-3. For each month checked (this month and the next two), starting with the one on
-   screen: reads every day's AM and PM tags, works out the new openings, and
-   accepts them **before** moving to the next month (first come, first served).
-   Starting from the month on screen keeps it to one page load per month.
-4. Saves state to `data/state.json` and sends **one** email for the whole run, or
+2. Loads the month: clicks **Available** to reload it if it is already on screen, or
+   moves to it with the month arrows. It waits until the load has finished; the old
+   calendar stays on screen while the site loads, so it is never read as new.
+3. Reads every day's AM and PM tags, works out the new openings, and accepts them
+   **before** moving to another month (first come, first served). `once` starts from
+   the month on screen, which keeps it to one page load per month.
+4. If Elisa refused any of the month's data (429 Too Many Requests or a server error),
+   the check fails and nothing is accepted.
+5. Saves state to `data/state.json` and sends **one** email for the whole run, or
    nothing if nothing happened.
 
 ## Safety rules

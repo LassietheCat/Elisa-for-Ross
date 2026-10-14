@@ -171,10 +171,23 @@ def compare_with_site(
     return problems, unknown
 
 
-async def run_site_check(settings: Settings, selectors: Selectors, *, now: Callable[[], dt.datetime] | None = None) -> SiteCheckReport:
+def site_check_seconds(settings: Settings) -> int:
+    return settings.quiet_after_sign_in_seconds + (settings.months_to_check - 1) * settings.poll_seconds + 30
+
+
+async def run_site_check(
+    settings: Settings,
+    selectors: Selectors,
+    *,
+    now: Callable[[], dt.datetime] | None = None,
+    quiet_s: float | None = None,
+    pause_s: float | None = None,
+) -> SiteCheckReport:
     clock = now or (lambda: now_in(settings.timezone))
     today = clock().date()
     months = target_months(today, settings.months_to_check)
+    quiet = settings.quiet_after_sign_in_seconds if quiet_s is None else quiet_s
+    pause = settings.poll_seconds if pause_s is None else pause_s
     report = SiteCheckReport()
     session = SiteSession(settings, selectors)
     data = SiteData(selectors)
@@ -198,11 +211,14 @@ async def run_site_check(settings: Settings, selectors: Selectors, *, now: Calla
 
         step = "Calendar reload (Available)"
         reader = CalendarReader(session.page, selectors)
+        await asyncio.sleep(quiet)
         mark = data.mark()
+        session.clear_problems()
         started = loop.time()
         await reader.refresh()
         detail = f"{loop.time() - started:.1f} s, loading " + ("detected" if reader.saw_loading else "not detected")
-        report.add(step, True, detail)
+        problem = session.problem()
+        report.add(step, problem is None, detail if problem is None else f"{detail}; the site refused it ({problem.code})")
         if not reader.saw_loading:
             report.warnings.append(
                 "The reload finished without the status buttons being disabled, so the bot can't see when "
@@ -212,11 +228,17 @@ async def run_site_check(settings: Settings, selectors: Selectors, *, now: Calla
         for index, (year, month) in enumerate(months):
             step = f"{calendar.month_name[month]} {year}"
             if index:
+                await asyncio.sleep(pause)
                 mark = data.mark()
+                session.clear_problems()
             await reader.go_to_month(year, month)
             reading = await reader.read_displayed_month()
             raw = await reader.wait_ready()
             await data.settle()
+            problem = session.problem()
+            if problem is not None:
+                report.add(step, False, f"the site refused this month's data ({problem.code}), so it can't be checked")
+                continue
             _check_month(report, reader, reading, raw, data, mark, step)
     except (InvalidCredentials, VerificationRequired):
         raise

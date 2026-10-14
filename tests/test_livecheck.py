@@ -52,7 +52,7 @@ async def test_site_check_passes_when_the_reader_fits(mock, settings):
         wo("2026-12-03", "PM", "available"),
         wo("2026-12-10", "AM", "confirmed"),
     ])
-    report = await run_site_check(settings, Selectors(), now=fixed_now)
+    report = await run_site_check(settings, Selectors(), now=fixed_now, quiet_s=0, pause_s=0)
     names = [step.name for step in report.steps]
     assert names == [
         "Sign-in",
@@ -80,7 +80,7 @@ async def test_site_check_passes_when_the_reader_fits(mock, settings):
 @pytest.mark.browser
 async def test_site_check_lists_differences(mock, settings):
     mock.configure(schedule_drift=True)
-    report = await run_site_check(settings, Selectors(), now=fixed_now)
+    report = await run_site_check(settings, Selectors(), now=fixed_now, quiet_s=0, pause_s=0)
     assert not report.ok
     assert report.mismatches == [
         "2026-10-20 AM: the site's data says 1 assigned, the calendar shows 0",
@@ -92,7 +92,7 @@ async def test_site_check_lists_differences(mock, settings):
 @pytest.mark.browser
 async def test_site_check_flags_unknown_tag_words(mock, settings):
     mock.set_work_orders([wo("2026-10-14", "AM", "cancelled")])
-    report = await run_site_check(settings, Selectors(), now=fixed_now)
+    report = await run_site_check(settings, Selectors(), now=fixed_now, quiet_s=0, pause_s=0)
     assert report.ok
     assert any("Cancelled" in warning for warning in report.warnings)
 
@@ -116,5 +116,17 @@ async def test_site_check_reports_a_missing_piece(mock, settings):
 async def test_site_check_stops_on_a_rejected_password(mock, settings):
     mock.configure(invalid_credentials=True)
     with pytest.raises(InvalidCredentials):
-        await run_site_check(settings, Selectors(), now=fixed_now)
+        await run_site_check(settings, Selectors(), now=fixed_now, quiet_s=0, pause_s=0)
     assert mock.stats()["login_attempts"] == 1
+
+
+@pytest.mark.browser
+async def test_site_check_fails_a_month_whose_data_was_refused(mock, settings):
+    mock.configure(schedule_error_times=1, schedule_error_after=2)
+    report = await run_site_check(settings, Selectors(), now=fixed_now, quiet_s=0, pause_s=0)
+    assert not report.ok
+    steps = {step.name: step for step in report.steps}
+    assert not steps["November 2026"].ok
+    assert "data_request_failed" in steps["November 2026"].detail
+    assert "November 2026: cross-check with the site's data" not in steps
+    assert steps["October 2026"].ok and steps["December 2026"].ok

@@ -26,6 +26,7 @@ def plan_month(
     today: dt.date,
     settings: Settings,
     already_planned: int = 0,
+    baseline: bool | None = None,
 ) -> Plan:
     available = {slot for slot, tags in slots.items() if tags.available > 0}
     plan = Plan(
@@ -33,7 +34,9 @@ def plan_month(
         booked={slot for slot, tags in slots.items() if tags.booked},
         new=available - state.seen_slots(),
     )
-    if not state.baseline_done and not settings.apply_on_first_run:
+    if baseline is None:
+        baseline = not state.baseline_done
+    if baseline and not settings.apply_on_first_run:
         plan.baseline_only = True
         return plan
 
