@@ -1,0 +1,22 @@
+[Unit]
+Description=Elisa bot: password-protected on/off page
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=elisa
+Group=elisa
+WorkingDirectory=/var/lib/elisa-bot
+ExecStart=/opt/elisa-bot/.venv/bin/python -m elisa_bot --env-file /etc/elisa-bot/env control
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/elisa-bot
+
+[Install]
+WantedBy=multi-user.target

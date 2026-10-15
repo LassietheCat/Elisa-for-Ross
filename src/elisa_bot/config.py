@@ -108,7 +108,7 @@ class Settings:
     max_attempts_per_slot: int = 2
     months_to_check: int = 3
 
-    poll_seconds: int = 15
+    poll_seconds: int = 20
     min_poll_seconds: int = 15
     max_poll_seconds: int = 600
     logout_when_off: bool = True
@@ -157,7 +157,7 @@ class Settings:
 
         min_poll = e.integer("MIN_POLL_SECONDS", 15, lo=5)
         max_poll = e.integer("MAX_POLL_SECONDS", 600, lo=min_poll)
-        poll = e.integer("POLL_SECONDS", 15, lo=min_poll, hi=max_poll)
+        poll = e.integer("POLL_SECONDS", 20, lo=min_poll, hi=max_poll)
 
         provider = (e.text("SMTP_PROVIDER") or "").lower() or None
         if provider is not None and provider not in SMTP_PRESETS:

@@ -1,0 +1,26 @@
+[Unit]
+Description=Elisa bot: checks Open Work Orders while switched on
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=elisa
+Group=elisa
+WorkingDirectory=/var/lib/elisa-bot
+ExecStart=/opt/elisa-bot/.venv/bin/python -m elisa_bot --env-file /etc/elisa-bot/env run
+KillMode=mixed
+TimeoutStopSec=60
+Restart=on-failure
+RestartSec=30
+RestartSteps=5
+RestartMaxDelaySec=900
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/elisa-bot
+
+[Install]
+WantedBy=multi-user.target

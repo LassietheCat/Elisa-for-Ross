@@ -19,3 +19,6 @@ data/
 .vscode/
 .idea/
 .DS_Store
+
+# Client handover notes
+HANDOVER.md

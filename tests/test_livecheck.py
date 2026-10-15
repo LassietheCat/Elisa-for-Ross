@@ -39,6 +39,7 @@ def test_compare_matches_and_differences():
 
 @pytest.mark.browser
 async def test_site_check_passes_when_the_reader_fits(mock, settings):
+    mock.configure(loading_delay_ms=900)
     mock.set_work_orders([
         wo("2026-10-08", "AM", "assigned"),
         wo("2026-10-08", "PM", "assigned"),

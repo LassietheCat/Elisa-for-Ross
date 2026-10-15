@@ -16,7 +16,7 @@ def test_missing_file_gives_a_fresh_state(tmp_path):
 
 def test_round_trip_and_owner_only_permissions(tmp_path):
     store = StateStore(tmp_path / "data" / "state.json")
-    state = BotState(baseline_done=True, seen=["2026-10-14 AM"])
+    state = BotState(baseline_done=True, watched_through="2026-12", seen=["2026-10-14 AM"])
     state.record_apply(Slot.parse("2026-10-15 PM"), dt.datetime(2026, 10, 7, 9, 30, tzinfo=ZoneInfo("America/New_York")))
     store.save(state)
     loaded = store.load()
@@ -24,6 +24,7 @@ def test_round_trip_and_owner_only_permissions(tmp_path):
     assert loaded.applied_slots() == {Slot.parse("2026-10-15 PM")}
     assert loaded.applies_on(dt.date(2026, 10, 7)) == 1
     assert stat.S_IMODE(store.path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(store.path.parent.stat().st_mode) == 0o700
 
 
 def test_corrupt_file_is_moved_aside(tmp_path):
@@ -58,7 +59,7 @@ def test_switch_file_defaults_off_and_clamps(tmp_path):
     now = dt.datetime(2026, 10, 9, 10, 0, tzinfo=ZoneInfo("America/New_York"))
     settings = Settings(data_dir=tmp_path)
     store = ControlStore(settings)
-    assert store.load() == ControlState(enabled=False, poll_seconds=15)
+    assert store.load() == ControlState(enabled=False, poll_seconds=20)
     control = store.update(by="web", now=now, enabled=True, poll_seconds=5)
     assert (control.enabled, control.poll_seconds, control.updated_by) == (True, 15, "web")
     assert store.load() == control

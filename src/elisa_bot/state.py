@@ -23,6 +23,7 @@ class BotState:
     version: int = STATE_VERSION
     baseline_done: bool = False
     baseline_pending: list[str] = field(default_factory=list)
+    watched_through: str | None = None
     seen: list[str] = field(default_factory=list)
     applied: dict[str, str] = field(default_factory=dict)
     attempts: dict[str, int] = field(default_factory=dict)
@@ -82,7 +83,7 @@ class StateStore:
 @dataclass
 class ControlState:
     enabled: bool = False
-    poll_seconds: int = 15
+    poll_seconds: int = 20
     updated_at: str | None = None
     updated_by: str | None = None
 
@@ -126,7 +127,7 @@ class ControlStore:
 
 
 def write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:

@@ -94,7 +94,8 @@ def test_switch_turns_the_bot_on_and_off(tmp_path):
     control = ControlStore(settings).load()
     assert control.enabled is True and control.updated_by == "web"
     page = client.get("/").text
-    assert "ON" in page and "Checking every 15 seconds." in page and "Turn OFF" in page
+    assert "ON" in page and "Checking every 20 seconds." in page and "Turn OFF" in page
+    assert "every 15 seconds</option>" in page and "every 20 seconds</option>" in page
     client.post("/switch", data={"enabled": "off", "csrf": csrf_of(client)})
     assert ControlStore(settings).load().enabled is False
 
@@ -176,5 +177,5 @@ def test_control_file_is_owner_only_json(tmp_path):
     sign_in(client)
     client.post("/switch", data={"enabled": "on", "csrf": csrf_of(client)})
     data = json.loads(settings.control_path.read_text())
-    assert data["enabled"] is True and data["poll_seconds"] == 15
+    assert data["enabled"] is True and data["poll_seconds"] == 20
     assert settings.control_path.stat().st_mode & 0o777 == 0o600

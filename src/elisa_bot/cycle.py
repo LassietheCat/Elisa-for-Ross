@@ -88,8 +88,11 @@ async def run_once(
     session = session or SiteSession(settings, selectors)
     today = clock().date()
     window = target_months(today, settings.months_to_check)
-    if not state.baseline_done and not state.baseline_pending:
-        state.baseline_pending = [month_key(m) for m in window]
+    state.baseline_pending += [
+        key
+        for key in map(month_key, window)
+        if key not in state.baseline_pending and (state.watched_through is None or key > state.watched_through)
+    ]
     report = CycleReport()
     baselines: list[bool] = []
     try:
@@ -158,6 +161,8 @@ async def run_once(
     state.seen = sorted(str(slot) for slot in kept | (report.available - retry))
     state.baseline_pending = [key for key in state.baseline_pending if key in other_months]
     state.baseline_done = not state.baseline_pending
+    if read_keys:
+        state.watched_through = max(read_keys | {state.watched_through or ""})
     log.info(
         "Checked %s: %d open, %d new%s",
         ", ".join(sorted(read_keys)),

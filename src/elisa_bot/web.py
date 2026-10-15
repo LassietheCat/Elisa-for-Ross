@@ -24,7 +24,7 @@ COOKIE = "elisa_control"
 SESSION_SECONDS = 30 * 24 * 3600
 LOGIN_LIMIT = 5
 LOGIN_WINDOW_S = 15 * 60
-INTERVAL_CHOICES = (15, 30, 60, 120, 300, 600)
+INTERVAL_CHOICES = (15, 20, 30, 60, 120, 300, 600)
 FLASH = {
     "sent": "Test alert sent. Check your inbox.",
     "failed": "The test alert could not be sent. Check the email settings.",

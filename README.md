@@ -13,6 +13,9 @@ The Accept step is based on the Elisa phone app (an Accept button per work order
 The desktop version hasn't been seen on the live site yet, so keep `TEST_MODE=true`
 on the real site until it has.
 
+Running it on a server: [RUNBOOK.md](RUNBOOK.md). For the client:
+[HANDOVER.md](HANDOVER.md).
+
 ## Setup
 
 ```bash
@@ -46,14 +49,17 @@ schedule `once` every 15 seconds; use `run` for that.
 **off**. Every second it looks at the switch (`data/control.json`):
 
 - **On:** it signs in once, keeps that session, and checks every `POLL_SECONDS`
-  (15 by default, never below `MIN_POLL_SECONDS`). Elisa limits how many requests
+  (20 by default, never below `MIN_POLL_SECONDS`, 15). Elisa limits how many requests
   an account can make, so **each check loads one month**, moving one month at a time:
-  Oct → Nov → Dec → Nov → Oct … With 3 months that is the middle month every 30 s and
-  the outer months every 60 s, one page load per check, never a burst. Signing in is
+  Oct → Nov → Dec → Nov → Oct … With 3 months that is the middle month every 40 s and
+  the outer months every 80 s, one page load per check, never a burst. In a 4-hour
+  live test, checking every 15 s drew about 3 refusals an hour; every 20 s drew none.
+  Signing in is
   itself a burst of requests, so after a sign-in the bot reads the calendar that just
   loaded and then waits `QUIET_AFTER_SIGN_IN_SECONDS` (90) before the next check.
 - **First look per month:** the first time each month is read after the bot starts
-  (or after `reset-state`), its openings are only recorded, never acted on
+  (or after `reset-state`), and the first time a new month comes into view (on the
+  1st, the month two ahead), its openings are only recorded, never acted on
   (`APPLY_ON_FIRST_RUN=false`). The bot remembers what it has seen month by month, so
   reading one month never makes another month's openings look new.
 - **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
@@ -66,12 +72,12 @@ schedule `once` every 15 seconds; use `run` for that.
   that won't start counts as a failed check too; the bot keeps going.
 - **The site is busy** (it answers 429 Too Many Requests, at sign-in or during a
   check): the check fails and nothing is accepted. The bot waits longer than for
-  other failures (1, 2, 4, 8 minutes, up to 15), or as long as the site asks in
+  other failures (80 s, then about 3, 5 and 11 minutes, up to 15), or as long as the site asks in
   `Retry-After` (up to an hour).
 - **A calendar data request fails** (the site's schedule or count request returns an
   error): the check fails and nothing is accepted, because a half-loaded calendar
   could hide a job the owner already has. The page itself still works, so the bot
-  doesn't reload it: the next check simply asks for the data again (after 30 s, 60 s,
+  doesn't reload it: the next check simply asks for the data again (after 40 s, 80 s,
   … up to 5 minutes if it keeps failing).
 - **Sign-ins are capped** at `MAX_SIGN_INS_PER_HOUR` (6). If the site keeps signing
   the bot out, it stops signing in until the hour is up, so it never fights over the
@@ -115,7 +121,10 @@ SMTP_PASSWORD=<AgentMail API key>
 The SMTP password is an **API key** from console.agentmail.to → API Keys, not the
 console sign-in password. The key is shown only once, so keep it in `.env` or a
 `SMTP_PASSWORD_FILE` secret. AgentMail sends over port 465 with TLS, and the sender
-must be the inbox address.
+must be the inbox address. AgentMail shows the inbox's **display name** as the sender
+name instead of `SMTP_FROM_NAME`, so set the inbox's display name to "Elisa Bot"
+(API: `PATCH /v0/inboxes/<address>` with `display_name`). AgentMail adds a
+"Sent via AgentMail" line to each message.
 
 **A normal mailbox:** set `SMTP_PROVIDER` (`gmail`, `outlook`, `aol`, `yahoo`,
 `icloud`), the address in `SMTP_USERNAME`, and an **app password** in
@@ -146,7 +155,7 @@ A read-only check that the reader fits the live Elisa page. It signs in, opens O
 Work Orders, reloads with **Available**, reads every month it checks, then signs
 out. It never opens an opening or clicks Accept. It paces itself to stay under
 Elisa's request limit: it waits `QUIET_AFTER_SIGN_IN_SECONDS` after signing in and
-`POLL_SECONDS` between months, so it takes about two minutes. A month whose data the
+`POLL_SECONDS` between months, so it takes about three minutes. A month whose data the
 site refused (for example 429 Too Many Requests) is reported as **FAIL**, never as
 an empty month. It reports:
 
@@ -183,9 +192,10 @@ it again.
 
 - **Test mode is the default** (`TEST_MODE=true`): the bot opens the opening, finds
   the Accept button and closes the window without clicking.
-- **First run = baseline.** The first run, and the first run after `reset-state`,
-  only records what is already open (`APPLY_ON_FIRST_RUN=false`), because an
-  accepted job can only be withdrawn by emailing SOSi.
+- **First run = baseline.** The first run, the first run after `reset-state`, and
+  the first look at a month that comes into view only record what is already open
+  (`APPLY_ON_FIRST_RUN=false`), because an accepted job can only be withdrawn by
+  emailing SOSi.
 - **Only new openings.** An opening is handled once, the first time it shows. If
   one appears while in test mode, switching to live later will not accept it.
 - **Never double-book:** slots where the owner already has an Applied, Assigned or
@@ -238,6 +248,7 @@ src/elisa_bot/
   site/calendar.py  reading the calendar
   site/applier.py   Accept / test mode
 tests/              unit tests + browser tests against tests/mock_site/
+deploy/             systemd services, Caddy config, the elisa-bot command for the server
 ```
 
 If the site's layout changes, adjust `site/selectors.py`, or put overrides in a

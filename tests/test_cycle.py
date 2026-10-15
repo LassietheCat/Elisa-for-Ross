@@ -33,6 +33,10 @@ async def run(settings, capture, session=None, month=None):
     return await run_once(settings, Selectors(), notifier=capture, now=fixed_now, session=session, month=month)
 
 
+def november_first():
+    return fixed_now().replace(month=11, day=1)
+
+
 async def signed_in(settings) -> SiteSession:
     session = SiteSession(settings, Selectors())
     await session.start()
@@ -65,6 +69,23 @@ async def test_first_run_only_records_what_is_already_open(mock, tmp_path):
     assert mock.stats()["details_opened"] == 0
     state = StateStore(settings.state_path).load()
     assert state.baseline_done and state.seen == ["2026-10-14 AM"]
+
+
+async def test_a_month_that_comes_into_view_gets_a_first_look_too(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.configure(today="2026-11-01")
+    mock.set_work_orders([wo("2027-01-12", "AM", "available")])
+    report = await run_once(settings, Selectors(), notifier=capture, now=november_first)
+    assert sorted(report.months_read) == [(2026, 11), (2026, 12), (2027, 1)]
+    assert report.results == [] and capture.messages == [] and mock.stats()["accept_calls"] == []
+    state = StateStore(settings.state_path).load()
+    assert state.seen == ["2027-01-12 AM"] and state.watched_through == "2027-01" and state.baseline_done
+
+    mock.set_work_orders([wo("2027-01-12", "AM", "available"), wo("2027-01-20", "PM", "available")])
+    report = await run_once(settings, Selectors(), notifier=capture, now=november_first)
+    assert [str(r.slot) for r in report.results] == ["2027-01-20 PM"]
 
 
 async def test_test_mode_alerts_but_never_clicks(mock, settings):

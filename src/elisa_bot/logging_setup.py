@@ -32,7 +32,8 @@ class RedactingFilter(logging.Filter):
 
 
 def setup_logging(settings: Settings, *, process: str) -> None:
-    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    settings.data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    settings.log_dir.mkdir(mode=0o700, exist_ok=True)
     log_file = settings.log_dir / f"{process}.log"
     formatter = logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s", "%Y-%m-%d %H:%M:%S")
     redact = RedactingFilter(settings.secret_values())

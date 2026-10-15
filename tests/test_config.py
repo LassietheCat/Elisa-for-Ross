@@ -2,14 +2,31 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import stat
 from pathlib import Path
 
 import pytest
 
 from elisa_bot.config import ConfigError, Settings, read_env_file
-from elisa_bot.logging_setup import RedactingFilter
+from elisa_bot.logging_setup import RedactingFilter, setup_logging
 from elisa_bot.models import Half, Slot
 from elisa_bot.site.selectors import Selectors, load_selectors
+
+
+def test_log_setup_makes_owner_only_folders(tmp_path):
+    root = logging.getLogger()
+    handlers, level = list(root.handlers), root.level
+    settings = Settings.from_env({"DATA_DIR": str(tmp_path / "data")})
+    try:
+        setup_logging(settings, process="test")
+    finally:
+        for handler in root.handlers:
+            if handler not in handlers:
+                handler.close()
+        root.handlers[:] = handlers
+        root.setLevel(level)
+    assert stat.S_IMODE(settings.data_dir.stat().st_mode) == 0o700
+    assert stat.S_IMODE(settings.log_dir.stat().st_mode) == 0o700
 
 
 def test_defaults_are_safe():
@@ -91,7 +108,7 @@ def test_smtp_provider_presets():
 
 
 def test_check_interval_limits():
-    assert Settings.from_env({}).poll_seconds == 15
+    assert Settings.from_env({}).poll_seconds == 20
     with pytest.raises(ConfigError, match="POLL_SECONDS must be at least 15"):
         Settings.from_env({"POLL_SECONDS": "5"})
     with pytest.raises(ConfigError, match="MIN_POLL_SECONDS"):

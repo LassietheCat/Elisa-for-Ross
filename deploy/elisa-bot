@@ -1,0 +1,3 @@
+#!/bin/sh
+cd /var/lib/elisa-bot || exit 1
+exec sudo -u elisa -H /opt/elisa-bot/.venv/bin/python -m elisa_bot --env-file /etc/elisa-bot/env "$@"
