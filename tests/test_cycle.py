@@ -162,6 +162,36 @@ async def test_nothing_private_is_stored_logged_or_sent(mock, tmp_path, caplog):
         assert MOCK_EMAIL not in text
 
 
+async def test_calendar_tags_the_bot_cannot_read_are_logged(mock, settings, caplog):
+    caplog.set_level(logging.WARNING)
+    mock.set_work_orders([wo("2026-10-21", "PM", "cancelled")])
+    await run(settings, Capture())
+    assert "2026-10: calendar tags with labels the bot doesn't know: Cancelled" in caplog.text
+    assert "2026-10-21: 1 calendar tag(s) the bot couldn't read" in caplog.text
+
+
+async def test_a_difference_from_elisas_own_open_count_is_logged_once(mock, settings, caplog):
+    caplog.set_level(logging.WARNING)
+    mock.configure(count_extra_new=1)
+    session = await signed_in(settings)
+    try:
+        await run(settings, Capture(), session)
+        await run(settings, Capture(), session, month=(2026, 10))
+    finally:
+        await session.close()
+    warning = "2026-10: Elisa's own count shows 1 open work order(s), the calendar shows 0"
+    assert caplog.text.count(warning) == 1
+    assert "2026-11: Elisa's own count shows 1 open work order(s)" in caplog.text
+
+
+async def test_matching_counts_and_known_tags_log_no_warning(mock, settings, caplog):
+    caplog.set_level(logging.INFO)
+    mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-15", "PM", "assigned")])
+    await run(settings, Capture())
+    assert caplog.text.count("Reading Elisa's own open-work-order count too") == 1
+    assert "couldn't read" not in caplog.text and "own count shows" not in caplog.text
+
+
 async def test_rejected_sign_in_is_recorded_and_not_retried(mock, settings):
     mock.configure(invalid_credentials=True)
     with pytest.raises(InvalidCredentials):

@@ -7,7 +7,7 @@ from typing import Callable
 
 from .config import Settings
 from .detect import plan_month
-from .models import ApplyOutcome, ApplyResult, Slot, SlotTags
+from .models import ApplyOutcome, ApplyResult, MonthReading, Slot, SlotTags
 from .notify import Notifier, build_notifier, cycle_message
 from .site.applier import Applier
 from .site.calendar import CalendarReader
@@ -115,6 +115,7 @@ async def run_once(
             await reader.go_to_month(year, month_number)
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
+            await _warn_about_missed_tags(session, reading)
             plan = plan_month(
                 reading.slots,
                 state,
@@ -178,6 +179,25 @@ async def run_once(
 
     report.notified = await _notify(notifier, settings, report.results, report.skipped_booked)
     return report
+
+
+async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -> None:
+    key = month_key((reading.year, reading.month))
+    if reading.unknown_words:
+        words = ", ".join(sorted(reading.unknown_words))
+        session.warn_once(("labels", key, words), "%s: calendar tags with labels the bot doesn't know: %s", key, words)
+    for day, count in sorted(reading.unread.items()):
+        session.warn_once(("unread", day, count), "%s: %d calendar tag(s) the bot couldn't read", day, count)
+    site_open = await session.site_open_count()
+    shown = sum(tags.available for tags in reading.slots.values())
+    if site_open is not None and site_open != shown:
+        session.warn_once(
+            ("open count", key, site_open, shown),
+            "%s: Elisa's own count shows %d open work order(s), the calendar shows %d",
+            key,
+            site_open,
+            shown,
+        )
 
 
 async def _notify(notifier: Notifier, settings: Settings, results: list[ApplyResult], skipped: list[Slot]) -> bool:

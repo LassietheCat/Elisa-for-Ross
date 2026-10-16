@@ -40,6 +40,7 @@ DEFAULT_CONFIG = {
     "retry_after": "",
     "schedule_error_times": 0,
     "schedule_error_after": 0,
+    "count_extra_new": 0,
 }
 
 
@@ -170,6 +171,7 @@ def create_app(state: MockState) -> FastAPI:
             in_window = [wo for wo in state.work_orders if start <= wo["date"] <= end]
         count = {name: sum(1 for wo in in_window if wo["status"] == status)
                  for status, name in (("assigned", "assigned"), ("applied", "applied"), ("confirmed", "confirmed"), ("available", "new"))}
+        count["new"] += state.config["count_extra_new"]
         return {"status": True, "responseCount": count}
 
     @app.get("/my/dashboard/main-dashboard", response_class=HTMLResponse)

@@ -12,7 +12,7 @@ safety rules are in [README.md](README.md); the client's summary is
 | Bot | On since Oct 14, 19:13, in test mode, checking every 20 s |
 | Alerts | From "Elisa Bot" <anya-alerts@agentmail.to> to Henry, Anya and Ross (`ALERT_EMAIL_TO`) |
 | Logins | `root` by SSH key from Ross's development machine; Henry's root password (to be changed, since it was sent by message) |
-| On/off page | Running on 127.0.0.1:8080; no public address yet (see [HTTPS for the on/off page](#https-for-the-onoff-page)) |
+| On/off page | `https://anya-elisa.duckdns.org` (DuckDNS name made by Ross; Caddy with a Let's Encrypt certificate and HSTS, in front of 127.0.0.1:8080) |
 
 ## Where things live
 
@@ -159,6 +159,10 @@ address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then
   `src/elisa_bot/site/selectors.py` (or a `SELECTORS_FILE`), and run `site-check` again
   (with the bot switched off, as above).
 - **Many "site_busy" lines in the log:** the interval is too short; raise it on the page.
+- **"Elisa's own count shows N open work order(s), the calendar shows M", or "calendar
+  tag(s) the bot couldn't read":** the bot may be missing openings. Run `site-check`
+  (with the bot switched off) and send its output to the developer. Check for these with
+  `journalctl -u elisa-bot --since today | grep -E "own count|couldn't read|doesn't know"`.
 
 ## Going live
 

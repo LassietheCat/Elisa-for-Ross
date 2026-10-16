@@ -50,6 +50,8 @@ class MonthReading:
     year: int
     month: int
     slots: dict[Slot, SlotTags] = field(default_factory=dict)
+    unread: dict[dt.date, int] = field(default_factory=dict)
+    unknown_words: set[str] = field(default_factory=set)
 
     def available(self) -> set[Slot]:
         return {slot for slot, tags in self.slots.items() if tags.available > 0}

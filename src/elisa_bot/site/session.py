@@ -75,6 +75,9 @@ class SiteSession:
         self._context: BrowserContext | None = None
         self._page: Page | None = None
         self._problem: SiteError | None = None
+        self._open_counts: list[int] = []
+        self._count_reads: list[asyncio.Future] = []
+        self._warned: set[tuple] = set()
 
     @property
     def started(self) -> bool:
@@ -99,9 +102,13 @@ class SiteSession:
         self._page.on("response", self._on_response)
 
     def _on_response(self, response: Response) -> None:
-        if isinstance(self._problem, SiteBusy) or response.request.resource_type not in _WATCHED_TYPES:
+        if response.request.resource_type not in _WATCHED_TYPES:
             return
         path = urlsplit(response.url).path
+        if response.ok and path.endswith(self.sel.counts_api):
+            self._count_reads.append(asyncio.ensure_future(self._read_open_count(response)))
+        if isinstance(self._problem, SiteBusy):
+            return
         if response.status == 429:
             retry_after = parse_retry_after(response.headers.get("retry-after"))
             self._problem = SiteBusy("the site answered 429 Too Many Requests", retry_after=retry_after)
@@ -110,8 +117,32 @@ class SiteSession:
         ):
             self._problem = DataRequestFailed(f"a calendar data request failed ({response.status})")
 
+    async def _read_open_count(self, response: Response) -> None:
+        try:
+            data = await response.json()
+        except (PlaywrightError, ValueError):
+            return
+        counts = data.get("responseCount") if isinstance(data, dict) else None
+        if isinstance(counts, dict) and type(counts.get("new")) is int:
+            self._open_counts.append(counts["new"])
+            if ("open count",) not in self._warned:
+                self._warned.add(("open count",))
+                log.info("Reading Elisa's own open-work-order count too (now %d)", counts["new"])
+
+    async def site_open_count(self) -> int | None:
+        reads, self._count_reads = self._count_reads, []
+        if reads:
+            await asyncio.gather(*reads, return_exceptions=True)
+        return self._open_counts[-1] if self._open_counts else None
+
+    def warn_once(self, key: tuple, message: str, *args: object) -> None:
+        if key not in self._warned:
+            self._warned.add(key)
+            log.warning(message, *args)
+
     def clear_problems(self) -> None:
         self._problem = None
+        self._open_counts.clear()
 
     def problem(self) -> SiteError | None:
         return self._problem

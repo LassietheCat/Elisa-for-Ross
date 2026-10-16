@@ -43,6 +43,14 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 `check`, `site-check` and `once` each sign in, then sign out at the end, so don't
 schedule `once` every 15 seconds; use `run` for that.
 
+To show a full Accept without touching the real site, run the demo against the local
+imitation of Elisa (`tests/mock_site/`) in a visible browser:
+
+```bash
+.venv/bin/python -m scripts.demo_accept                      # waits for Enter between steps
+.venv/bin/python -m scripts.demo_accept --email-to <address>  # also emails the alert, subject "DEMO: …"
+```
+
 ### run: the always-on bot
 
 `run` keeps going until it is stopped (Ctrl+C or a normal service stop). It starts
@@ -185,6 +193,9 @@ it again.
    the month on screen, which keeps it to one page load per month.
 4. If Elisa refused any of the month's data (429 Too Many Requests or a server error),
    the check fails and nothing is accepted.
+   It also compares the calendar with Elisa's own count of open work orders (which the
+   page downloads) and logs a warning if they differ, or if a calendar tag can't be
+   read. A missed opening shows up in the log at once (counts and dates only).
 5. Saves state to `data/state.json` and sends **one** email for the whole run, or
    nothing if nothing happened.
 

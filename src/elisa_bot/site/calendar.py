@@ -33,6 +33,7 @@ _WALK_JS = r"""
       const day = dayEl ? parseInt(txt(dayEl), 10) : NaN;
       if (!Number.isInteger(day)) continue;
       const halves = {};
+      let read = 0;
       for (const pill of cell.querySelectorAll(sel.halfBadge)) {
         const half = txt(pill).toUpperCase();
         if (half !== 'AM' && half !== 'PM') continue;
@@ -44,8 +45,10 @@ _WALK_JS = r"""
           if (m) tags.push({ count: parseInt(m[1], 10), word: m[2].trim(), el });
         }
         halves[half] = tags;
+        read += tags.length;
       }
-      yield { day, halves };
+      const unread = Math.max(0, cell.querySelectorAll(sel.tag).length - read);
+      yield { day, halves, unread };
     }
   }
 """
@@ -56,10 +59,10 @@ _READ_JS = (
     + r"""
   const title = Array.from(document.querySelectorAll(sel.monthTitle)).find(shown) || null;
   const cells = [];
-  for (const { day, halves } of walk()) {
+  for (const { day, halves, unread } of walk()) {
     const plain = {};
     for (const [half, tags] of Object.entries(halves)) plain[half] = tags.map(({ count, word }) => ({ count, word }));
-    cells.push({ day, halves: plain });
+    cells.push({ day, halves: plain, unread });
   }
   return { title: title ? txt(title) : null, cells };
 }"""
@@ -242,15 +245,20 @@ class CalendarReader:
         if sorted(cell["day"] for cell in cells) != list(range(1, days_in_month(year, month) + 1)):
             return None
         slots: dict[Slot, SlotTags] = {}
+        unread: dict[dt.date, int] = {}
+        unknown: set[str] = set()
         for cell in cells:
             day = dt.date(year, month, cell["day"])
+            if cell.get("unread"):
+                unread[day] = unread.get(day, 0) + int(cell["unread"])
             for half in Half:
                 tags = SlotTags()
                 for tag in cell["halves"].get(half.value, []):
                     status = self.status_of(tag["word"])
                     if status is None:
-                        log.debug("Ignoring a tag with an unknown status word on %s %s", day, half.value)
+                        unread[day] = unread.get(day, 0) + 1
+                        unknown.add(tag["word"])
                         continue
                     setattr(tags, status, getattr(tags, status) + int(tag["count"]))
                 slots[Slot(day, half)] = tags
-        return MonthReading(year, month, slots)
+        return MonthReading(year, month, slots, unread, unknown)
