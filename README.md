@@ -13,8 +13,7 @@ The Accept step is based on the Elisa phone app (an Accept button per work order
 The desktop version hasn't been seen on the live site yet, so keep `TEST_MODE=true`
 on the real site until it has.
 
-Running it on a server: [RUNBOOK.md](RUNBOOK.md). For the client:
-[HANDOVER.md](HANDOVER.md).
+Running it on a server: [RUNBOOK.md](RUNBOOK.md).
 
 ## Setup
 
