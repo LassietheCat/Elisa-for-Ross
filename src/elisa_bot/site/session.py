@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
+import json
 import logging
 import math
 import re
@@ -11,7 +13,7 @@ from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
 
-from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Response, async_playwright
+from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Request, Response, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from ..config import Settings
@@ -32,6 +34,14 @@ log = logging.getLogger(__name__)
 LOGIN_TIMEOUT_S = 30
 SIGN_IN_WINDOW_S = 3600
 _WATCHED_TYPES = ("document", "xhr", "fetch")
+_NOT_REPLAYED = {"content-length", "cookie", "host"}
+
+
+def _date_range(body: dict) -> dict | None:
+    for value in (body, *body.values()):
+        if isinstance(value, dict) and "startDate" in value and "endDate" in value:
+            return value
+    return None
 
 
 class SignInLimiter:
@@ -78,6 +88,8 @@ class SiteSession:
         self._open_counts: list[int] = []
         self._count_reads: list[asyncio.Future] = []
         self._warned: set[tuple] = set()
+        self._count_request: tuple[str, dict] | None = None
+        self._api_headers: dict[str, str] | None = None
 
     @property
     def started(self) -> bool:
@@ -99,7 +111,62 @@ class SiteSession:
         )
         self._page = await self._context.new_page()
         self._page.set_default_timeout(20_000)
+        self._page.on("request", self._on_request)
         self._page.on("response", self._on_response)
+
+    def _on_request(self, request: Request) -> None:
+        if request.method != "POST" or request.resource_type not in _WATCHED_TYPES:
+            return
+        path = urlsplit(request.url).path
+        if not (path.endswith(self.sel.counts_api) or path.endswith(self.sel.schedule_api)):
+            return
+        if path.endswith(self.sel.counts_api):
+            try:
+                body = request.post_data_json
+            except (PlaywrightError, ValueError):
+                body = None
+            if isinstance(body, dict) and _date_range(body) is not None:
+                self._count_request = (request.url, body)
+        asyncio.ensure_future(self._remember_headers(request))
+
+    async def _remember_headers(self, request: Request) -> None:
+        try:
+            headers = await request.all_headers()
+        except PlaywrightError:
+            return
+        self._api_headers = {
+            name: value for name, value in headers.items() if not name.startswith(":") and name.lower() not in _NOT_REPLAYED
+        }
+
+    async def count_open(self, start: dt.date, end: dt.date, today: dt.date) -> int | None:
+        if self._page is None or self._count_request is None or self._api_headers is None:
+            return None
+        url, template = self._count_request
+        body = copy.deepcopy(template)
+        dates = _date_range(body)
+        dates["startDate"], dates["endDate"] = start.isoformat(), end.isoformat()
+        if "currentDate" in dates:
+            dates["currentDate"] = today.isoformat()
+        try:
+            response = await self._page.context.request.post(
+                url, headers=self._api_headers, data=json.dumps(body), timeout=10_000
+            )
+        except PlaywrightError:
+            return None
+        if response.status == 429:
+            raise SiteBusy("the site answered 429 Too Many Requests", retry_after=parse_retry_after(response.headers.get("retry-after")))
+        if response.status in (401, 403):
+            self._api_headers = None
+            return None
+        if not response.ok:
+            return None
+        try:
+            data = await response.json()
+        except (PlaywrightError, ValueError):
+            return None
+        counts = data.get("responseCount") if isinstance(data, dict) else None
+        value = counts.get("new") if isinstance(counts, dict) else None
+        return value if type(value) is int else None
 
     def _on_response(self, response: Response) -> None:
         if response.request.resource_type not in _WATCHED_TYPES:
@@ -135,10 +202,12 @@ class SiteSession:
             await asyncio.gather(*reads, return_exceptions=True)
         return self._open_counts[-1] if self._open_counts else None
 
-    def warn_once(self, key: tuple, message: str, *args: object) -> None:
-        if key not in self._warned:
-            self._warned.add(key)
-            log.warning(message, *args)
+    def warn_once(self, key: tuple, message: str, *args: object) -> bool:
+        if key in self._warned:
+            return False
+        self._warned.add(key)
+        log.warning(message, *args)
+        return True
 
     def clear_problems(self) -> None:
         self._problem = None

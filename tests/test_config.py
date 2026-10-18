@@ -108,7 +108,8 @@ def test_smtp_provider_presets():
 
 
 def test_check_interval_limits():
-    assert Settings.from_env({}).poll_seconds == 20
+    assert Settings.from_env({}).poll_seconds == 60
+    assert Settings.from_env({}).quick_check_seconds == 20
     with pytest.raises(ConfigError, match="POLL_SECONDS must be at least 15"):
         Settings.from_env({"POLL_SECONDS": "5"})
     with pytest.raises(ConfigError, match="MIN_POLL_SECONDS"):

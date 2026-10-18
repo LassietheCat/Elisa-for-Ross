@@ -43,7 +43,7 @@ class Applier:
             accept = await self._find_button(window, self._accept_re)
             if accept is None:
                 await self._close_windows()
-                return ApplyResult(slot, ApplyOutcome.MISSED, "no_accept_button")
+                return ApplyResult(slot, ApplyOutcome.ERROR, "no_accept_button")
             if self.test_mode:
                 await self._close_windows()
                 return ApplyResult(slot, ApplyOutcome.TEST_MODE, "found_accept_button")

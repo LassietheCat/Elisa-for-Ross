@@ -162,34 +162,62 @@ async def test_nothing_private_is_stored_logged_or_sent(mock, tmp_path, caplog):
         assert MOCK_EMAIL not in text
 
 
-async def test_calendar_tags_the_bot_cannot_read_are_logged(mock, settings, caplog):
+async def test_calendar_tags_the_bot_cannot_read_are_logged_and_emailed(mock, settings, caplog):
     caplog.set_level(logging.WARNING)
     mock.set_work_orders([wo("2026-10-21", "PM", "cancelled")])
-    await run(settings, Capture())
+    capture = Capture()
+    await run(settings, capture)
     assert "2026-10: calendar tags with labels the bot doesn't know: Cancelled" in caplog.text
     assert "2026-10-21: 1 calendar tag(s) the bot couldn't read" in caplog.text
+    assert capture.messages == [Message(
+        "Elisa: the bot may be missing openings",
+        "October 2026: calendar tags with labels the bot doesn't know (Cancelled). "
+        "Wed Oct 21: 1 calendar tag(s) the bot couldn't read. "
+        "Please check Open Work Orders in Elisa by hand. The bot keeps checking.",
+    )]
 
 
-async def test_a_difference_from_elisas_own_open_count_is_logged_once(mock, settings, caplog):
+async def test_more_openings_in_elisas_own_count_are_logged_and_emailed_once(mock, settings, caplog):
     caplog.set_level(logging.WARNING)
     mock.configure(count_extra_new=1)
+    capture = Capture()
     session = await signed_in(settings)
     try:
-        await run(settings, Capture(), session)
-        await run(settings, Capture(), session, month=(2026, 10))
+        await run(settings, capture, session)
+        await run(settings, capture, session, month=(2026, 10))
     finally:
         await session.close()
     warning = "2026-10: Elisa's own count shows 1 open work order(s), the calendar shows 0"
     assert caplog.text.count(warning) == 1
     assert "2026-11: Elisa's own count shows 1 open work order(s)" in caplog.text
+    assert [m.subject for m in capture.messages] == ["Elisa: the bot may be missing openings"]
+    assert "October 2026: Elisa lists 1 open work order(s), but the bot saw 0 on the calendar." in capture.messages[0].text
+    assert "December 2026: Elisa lists 1 open work order(s)" in capture.messages[0].text
 
 
-async def test_matching_counts_and_known_tags_log_no_warning(mock, settings, caplog):
+async def test_matching_counts_and_known_tags_log_and_send_nothing(mock, settings, caplog):
     caplog.set_level(logging.INFO)
     mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-15", "PM", "assigned")])
-    await run(settings, Capture())
+    capture = Capture()
+    await run(settings, capture)
     assert caplog.text.count("Reading Elisa's own open-work-order count too") == 1
     assert "couldn't read" not in caplog.text and "own count shows" not in caplog.text
+    assert capture.messages == []
+
+
+async def test_an_opening_without_an_accept_button_is_reported_and_tried_once_more(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.configure(apply_mode="no_button")
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    report = await run(settings, capture)
+    assert [(r.outcome, r.code) for r in report.results] == [(ApplyOutcome.ERROR, "no_accept_button")]
+    assert capture.messages[-1].text == "Opening seen but Accept could not be tried, will retry: Wed Oct 14 AM."
+    report = await run(settings, capture)
+    assert [r.outcome for r in report.results] == [ApplyOutcome.ERROR]
+    report = await run(settings, capture)
+    assert report.results == [] and mock.stats()["accept_calls"] == []
 
 
 async def test_rejected_sign_in_is_recorded_and_not_retried(mock, settings):

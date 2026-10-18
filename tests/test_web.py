@@ -94,7 +94,8 @@ def test_switch_turns_the_bot_on_and_off(tmp_path):
     control = ControlStore(settings).load()
     assert control.enabled is True and control.updated_by == "web"
     page = client.get("/").text
-    assert "ON" in page and "Checking every 20 seconds." in page and "Turn OFF" in page
+    assert "ON" in page and "Turn OFF" in page
+    assert "Checking for new openings every 20 seconds; reading the calendar every 60 seconds." in page
     assert "every 15 seconds</option>" in page and "every 20 seconds</option>" in page
     client.post("/switch", data={"enabled": "off", "csrf": csrf_of(client)})
     assert ControlStore(settings).load().enabled is False
@@ -113,10 +114,18 @@ def test_interval_stays_within_limits(tmp_path):
     sign_in(client)
     client.post("/interval", data={"poll_seconds": "5", "csrf": csrf_of(client)})
     assert ControlStore(settings).load().poll_seconds == 15
-    client.post("/interval", data={"poll_seconds": "60", "csrf": csrf_of(client)})
-    assert ControlStore(settings).load().poll_seconds == 60
+    client.post("/interval", data={"poll_seconds": "30", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().poll_seconds == 30
     client.post("/interval", data={"poll_seconds": "soon", "csrf": csrf_of(client)})
-    assert ControlStore(settings).load().poll_seconds == 60
+    assert ControlStore(settings).load().poll_seconds == 30
+
+
+def test_without_quick_checks_the_page_shows_one_interval(tmp_path):
+    _, client, _ = make(tmp_path, quick_check_seconds=0)
+    sign_in(client)
+    client.post("/switch", data={"enabled": "on", "csrf": csrf_of(client)})
+    page = client.get("/").text
+    assert "Checking every 60 seconds." in page and '<label for="interval">Check</label>' in page
 
 
 def test_tampered_cookie_is_rejected(tmp_path):
@@ -177,5 +186,5 @@ def test_control_file_is_owner_only_json(tmp_path):
     sign_in(client)
     client.post("/switch", data={"enabled": "on", "csrf": csrf_of(client)})
     data = json.loads(settings.control_path.read_text())
-    assert data["enabled"] is True and data["poll_seconds"] == 20
+    assert data["enabled"] is True and data["poll_seconds"] == 60
     assert settings.control_path.stat().st_mode & 0o777 == 0o600

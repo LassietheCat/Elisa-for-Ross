@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+import datetime as dt
+
 import pytest
 
 from elisa_bot.site.errors import InvalidCredentials, SignInPaused, SiteBusy, VerificationRequired
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, SiteSession
+from tests.conftest import wo
 
 pytestmark = pytest.mark.browser
 
@@ -78,3 +82,38 @@ async def test_sign_in_limit_stops_extra_sign_ins(mock, settings):
         assert mock.stats()["login_attempts"] == 1
     finally:
         await session.close()
+
+
+OCT_1, DEC_31, TODAY = dt.date(2026, 10, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7)
+
+
+async def test_counts_open_work_orders_for_any_range_by_replaying_the_pages_own_request(mock, session):
+    assert await session.count_open(OCT_1, DEC_31, TODAY) is None
+    mock.set_work_orders([
+        wo("2026-10-14", "AM", "available"),
+        wo("2026-11-03", "PM", "available"),
+        wo("2026-12-08", "AM", "available"),
+        wo("2027-01-05", "AM", "available"),
+        wo("2026-11-04", "AM", "assigned"),
+    ])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    fetches = mock.stats()["calendar_fetches"]
+    assert await session.count_open(OCT_1, DEC_31, TODAY) == 3
+    assert await session.count_open(dt.date(2026, 11, 1), dt.date(2026, 11, 30), TODAY) == 1
+    assert mock.stats()["calendar_fetches"] == fetches
+
+
+async def test_a_refused_count_is_busy(mock, session):
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    mock.configure(rate_limited_times=1)
+    with pytest.raises(SiteBusy):
+        await session.count_open(OCT_1, DEC_31, TODAY)
+
+
+async def test_a_signed_out_count_gives_no_answer(mock, session):
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    mock.expire_sessions()
+    assert await session.count_open(OCT_1, DEC_31, TODAY) is None

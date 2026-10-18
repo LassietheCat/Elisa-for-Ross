@@ -9,7 +9,7 @@ safety rules are in [README.md](README.md); the client's summary is
 | | |
 |---|---|
 | Server | Henry's Contabo VPS `207.244.242.218` (Ubuntu 24.04.5, 12 vCPUs, 47 GB), installed Oct 14 by this runbook |
-| Bot | On since Oct 14, 19:13, in test mode, checking every 20 s |
+| Bot | On since Oct 14, 19:13, quick check every 20 s and a calendar read every 60 s since Oct 18; **live** (`TEST_MODE=false`) since Oct 16, 13:54 (the previous settings are in `/etc/elisa-bot/env.before-live`) |
 | Alerts | From "Elisa Bot" <anya-alerts@agentmail.to> to Henry, Anya and Ross (`ALERT_EMAIL_TO`) |
 | Logins | `root` by SSH key from Ross's development machine; Henry's root password (to be changed, since it was sent by message) |
 | On/off page | `https://anya-elisa.duckdns.org` (DuckDNS name made by Ross; Caddy with a Let's Encrypt certificate and HSTS, in front of 127.0.0.1:8080) |
@@ -120,7 +120,9 @@ sudo systemctl enable --now elisa-bot elisa-control
 The bot starts **off**. Wait two minutes after `site-check` (signing in is a burst of
 requests), then press **ON** on the page, or run `elisa-bot on` if the page has no
 address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then one
-"Checked 2026-10: … (first look, recorded only)" line per month, then a check every 20 s.
+"Checked 2026-10: … (first look, recorded only)" line per month, then a calendar read every
+60 s, with quick checks every 20 s in between. They log "Quick checks running" once, then only
+when the count goes up or Elisa refuses one.
 
 ## Day to day
 
@@ -137,8 +139,10 @@ address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then
 - **After changing settings or secrets:** `sudo systemctl restart elisa-bot elisa-control`.
 - **Stopping:** `sudo systemctl stop elisa-bot` signs out of Elisa first (`KillMode=mixed`
   lets the bot close its own browser).
-- **Interval:** 20 s by default. 15 s works but draws about 3 "too many requests"
-  refusals an hour from Elisa; each one pauses the bot for a minute or more.
+- **Intervals:** a quick check every `QUICK_CHECK_SECONDS` (20) and a calendar read every
+  `POLL_SECONDS` (60; the page's interval changes this one). Don't go faster: on Oct 18, quick
+  checks every 10 s drew "too many requests" refusals within minutes. After a refused quick
+  check the bot halves the quick-check rate by itself and restores it after 30 calm minutes.
 
 ## Alerts and what to do
 
@@ -147,6 +151,8 @@ address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then
 | Bot switched off (sign-in problem) | Elisa rejected the password or asked for a verification step. The bot stopped itself and won't retry. | Sign in by hand once; update the secret file; restart; switch on. |
 | Bot can't check right now | 3 checks in a row failed. | Usually fixes itself ("working again" follows). If not within 30 minutes: read the log, then `elisa-bot off`, `elisa-bot site-check`, `elisa-bot on`. |
 | Please check | Accept was clicked but the result couldn't be confirmed. | Look at Elisa. |
+| Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
+| Bot may be missing openings | Elisa's own count lists more open work orders than the bot saw, or a calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |
 | Applied, test mode, missed, skipped, working again | Normal. | Nothing. |
 
 ## When something is wrong
@@ -164,13 +170,14 @@ address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then
   (with the bot switched off) and send its output to the developer. Check for these with
   `journalctl -u elisa-bot --since today | grep -E "own count|couldn't read|doesn't know"`.
 
-## Going live
+## Live and test mode
 
-Only after the desktop Accept step has been seen on a real opening: a "test mode,
-opening" alert shows the bot found the Accept button, and what happens after the
-click has been checked with the client. Then set `TEST_MODE=false` and
-`sudo systemctl restart elisa-bot`. Openings already seen in test mode are never
-accepted later.
+The server runs live (`TEST_MODE=false`) since Oct 16, at the client's request. The
+desktop Accept step hadn't been seen on a real opening then, so check the first live
+accepts in Elisa. To stop clicking but keep alerts, set `TEST_MODE=true` and run
+`sudo systemctl restart elisa-bot`; set it back to `false` to accept again. Openings
+seen while in test mode are never accepted later. `MAX_APPLIES_PER_DAY` (10) caps the
+accepts per day.
 
 ## Updating
 

@@ -176,6 +176,13 @@ def recovered_message(failures: int) -> Message:
     return Message("Elisa: bot is working again", f"Checks are working again after {failures} failed tries.")
 
 
+def missed_openings_message(problems: list[str]) -> Message:
+    return Message(
+        "Elisa: the bot may be missing openings",
+        " ".join(problems) + " Please check Open Work Orders in Elisa by hand. The bot keeps checking.",
+    )
+
+
 def test_message() -> Message:
     return Message(
         "Elisa: test alert",

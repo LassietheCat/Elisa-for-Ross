@@ -107,7 +107,13 @@ def _status_page(
     if flash in FLASH:
         parts.append(f'<div class="card flash">{FLASH[flash]}</div>')
 
-    if control.enabled:
+    if control.enabled and settings.quick_check_seconds:
+        status = (
+            f'<p class="state on">ON</p><p>Checking for new openings every {settings.quick_check_seconds} seconds; '
+            f'reading the calendar every {control.poll_seconds} seconds.</p>'
+        )
+        button = '<button class="big turn-off" name="enabled" value="off" type="submit">Turn OFF</button>'
+    elif control.enabled:
         status = f'<p class="state on">ON</p><p>Checking every {control.poll_seconds} seconds.</p>'
         button = '<button class="big turn-off" name="enabled" value="off" type="submit">Turn OFF</button>'
     else:
@@ -145,7 +151,8 @@ def _status_page(
     )
     parts.append(
         f'<form class="card row" method="post" action="/interval">{token}'
-        f'<label for="interval">Check</label><select id="interval" name="poll_seconds">{options}</select>'
+        f'<label for="interval">{"Calendar" if settings.quick_check_seconds else "Check"}</label>'
+        f'<select id="interval" name="poll_seconds">{options}</select>'
         '<button class="secondary" type="submit">Save</button></form>'
     )
 

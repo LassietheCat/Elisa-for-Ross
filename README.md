@@ -10,8 +10,10 @@ in, open Open Work Orders, click **Available** to reload the calendar, look at t
 month and the next two (`MONTHS_TO_CHECK=3`), open an opening and click **Accept**.
 
 The Accept step is based on the Elisa phone app (an Accept button per work order).
-The desktop version hasn't been seen on the live site yet, so keep `TEST_MODE=true`
-on the real site until it has.
+The deployed bot has run live (`TEST_MODE=false`) since Oct 16. The desktop Accept
+step hadn't been seen on a real opening at release, so check the first live accepts
+in Elisa. If the page differs, the bot emails "please check" or "could not be tried"
+rather than failing silently.
 
 Running it on a server: [RUNBOOK.md](RUNBOOK.md).
 
@@ -55,15 +57,26 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
 `run` keeps going until it is stopped (Ctrl+C or a normal service stop). It starts
 **off**. Every second it looks at the switch (`data/control.json`):
 
-- **On:** it signs in once, keeps that session, and checks every `POLL_SECONDS`
-  (20 by default, never below `MIN_POLL_SECONDS`, 15). Elisa limits how many requests
-  an account can make, so **each check loads one month**, moving one month at a time:
-  Oct → Nov → Dec → Nov → Oct … With 3 months that is the middle month every 40 s and
-  the outer months every 80 s, one page load per check, never a burst. In a 4-hour
-  live test, checking every 15 s drew about 3 refusals an hour; every 20 s drew none.
-  Signing in is
-  itself a burst of requests, so after a sign-in the bot reads the calendar that just
-  loaded and then waits `QUIET_AFTER_SIGN_IN_SECONDS` (90) before the next check.
+- **On:** it signs in once and keeps that session.
+  - **Quick check, every `QUICK_CHECK_SECONDS` (20):** it asks Elisa how many open
+    work orders there are in all the months it checks, in one small request: the
+    count request the calendar page itself makes, replayed with the bot's date range.
+    When that number goes up, it reads the calendar at once and accepts. Openings
+    are often taken within a minute, so this is what makes the bot fast.
+  - **Calendar read, every `POLL_SECONDS` (60 by default, never below
+    `MIN_POLL_SECONDS`, 15):** it reads one month, moving one month at a time
+    (Oct → Nov → Dec → Nov → Oct …). This keeps the page and the sign-in fresh, gives
+    the quick check its request to replay, and catches anything the count misses.
+  - Elisa limits how many requests an account can make, and its count request more
+    strictly: quick checks every 10 s drew refusals within minutes, every 20 s none.
+    When a quick check is refused, quick checks pause until the next calendar read and
+    then run half as often (down to every 2 minutes); after 30 minutes without a
+    refusal they go back to `QUICK_CHECK_SECONDS`. They also pause while Elisa refuses
+    calendar reads and during the quiet periods below.
+
+  Signing in is itself a burst of requests, so after a sign-in the bot reads the
+  calendar that just loaded and then waits `QUIET_AFTER_SIGN_IN_SECONDS` (90) before
+  the next check.
 - **First look per month:** the first time each month is read after the bot starts
   (or after `reset-state`), and the first time a new month comes into view (on the
   1st, the month two ahead), its openings are only recorded, never acted on
@@ -79,13 +92,13 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   that won't start counts as a failed check too; the bot keeps going.
 - **The site is busy** (it answers 429 Too Many Requests, at sign-in or during a
   check): the check fails and nothing is accepted. The bot waits longer than for
-  other failures (80 s, then about 3, 5 and 11 minutes, up to 15), or as long as the site asks in
+  other failures (4 and 8 minutes, then 15), or as long as the site asks in
   `Retry-After` (up to an hour).
 - **A calendar data request fails** (the site's schedule or count request returns an
   error): the check fails and nothing is accepted, because a half-loaded calendar
   could hide a job the owner already has. The page itself still works, so the bot
-  doesn't reload it: the next check simply asks for the data again (after 40 s, 80 s,
-  … up to 5 minutes if it keeps failing).
+  doesn't reload it: the next check simply asks for the data again (after 2 minutes,
+  then 4, up to 5 if it keeps failing). Quick checks carry on meanwhile.
 - **Sign-ins are capped** at `MAX_SIGN_INS_PER_HOUR` (6). If the site keeps signing
   the bot out, it stops signing in until the hour is up, so it never fights over the
   account or adds to the site's failed-login count.
@@ -99,7 +112,7 @@ needs `CONTROL_PASSWORD` and `CONTROL_SECRET_KEY` (32+ random characters). The p
 shows:
 
 - **ON** or **OFF**, with one big button to switch;
-- the check interval (15 s and up);
+- how often it checks: the quick check, and the calendar interval (15 s and up), which the page can change;
 - the last check and whether it worked, with a warning if the bot has stopped
   checking;
 - the slots accepted recently (date and AM/PM only);
@@ -151,6 +164,7 @@ security settings. For other providers leave `SMTP_PROVIDER` empty and set
 | Bot switched off | Elisa rejected the sign-in; the bot stopped itself | always |
 | Bot can't check right now | 3 checks in a row failed | always |
 | Bot is working again | checks work again after that alert | always |
+| Bot may be missing openings | Elisa's own count shows more openings than the calendar, or a tag can't be read | always |
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the
@@ -162,7 +176,7 @@ A read-only check that the reader fits the live Elisa page. It signs in, opens O
 Work Orders, reloads with **Available**, reads every month it checks, then signs
 out. It never opens an opening or clicks Accept. It paces itself to stay under
 Elisa's request limit: it waits `QUIET_AFTER_SIGN_IN_SECONDS` after signing in and
-`POLL_SECONDS` between months, so it takes about three minutes. A month whose data the
+`POLL_SECONDS` between months, so it takes about four minutes. A month whose data the
 site refused (for example 429 Too Many Requests) is reported as **FAIL**, never as
 an empty month. It reports:
 
@@ -200,8 +214,12 @@ it again.
 
 ## Safety rules
 
-- **Test mode is the default** (`TEST_MODE=true`): the bot opens the opening, finds
-  the Accept button and closes the window without clicking.
+- **Test mode is the code's default** (`TEST_MODE=true`): the bot opens the opening,
+  finds the Accept button and closes the window without clicking. The server runs
+  with `TEST_MODE=false`.
+- **Missed openings are reported:** if Elisa's own count lists more open work orders
+  than the bot sees, or a calendar tag can't be read, one "the bot may be missing
+  openings" email goes out.
 - **First run = baseline.** The first run, the first run after `reset-state`, and
   the first look at a month that comes into view only record what is already open
   (`APPLY_ON_FIRST_RUN=false`), because an accepted job can only be withdrawn by

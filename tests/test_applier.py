@@ -82,7 +82,7 @@ async def test_no_accept_button(mock, session):
     mock.set_work_orders([wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=False)
     result = await applier.apply_one(S("2026-10-14 AM"))
-    assert (result.outcome, result.code) == (ApplyOutcome.MISSED, "no_accept_button")
+    assert (result.outcome, result.code) == (ApplyOutcome.ERROR, "no_accept_button")
     assert mock.stats()["accept_calls"] == []
     assert await no_window_open(session)
 

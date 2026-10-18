@@ -108,12 +108,13 @@ class Settings:
     max_attempts_per_slot: int = 2
     months_to_check: int = 3
 
-    poll_seconds: int = 20
+    poll_seconds: int = 60
     min_poll_seconds: int = 15
     max_poll_seconds: int = 600
     logout_when_off: bool = True
     max_sign_ins_per_hour: int = 6
     quiet_after_sign_in_seconds: int = 90
+    quick_check_seconds: int = 20
 
     notify_missed: bool = True
     notify_skipped: bool = True
@@ -157,7 +158,7 @@ class Settings:
 
         min_poll = e.integer("MIN_POLL_SECONDS", 15, lo=5)
         max_poll = e.integer("MAX_POLL_SECONDS", 600, lo=min_poll)
-        poll = e.integer("POLL_SECONDS", 20, lo=min_poll, hi=max_poll)
+        poll = e.integer("POLL_SECONDS", 60, lo=min_poll, hi=max_poll)
 
         provider = (e.text("SMTP_PROVIDER") or "").lower() or None
         if provider is not None and provider not in SMTP_PRESETS:
@@ -184,6 +185,7 @@ class Settings:
             logout_when_off=e.boolean("LOGOUT_WHEN_OFF", True),
             max_sign_ins_per_hour=e.integer("MAX_SIGN_INS_PER_HOUR", 6, lo=1, hi=60),
             quiet_after_sign_in_seconds=e.integer("QUIET_AFTER_SIGN_IN_SECONDS", 90, lo=0, hi=900),
+            quick_check_seconds=e.integer("QUICK_CHECK_SECONDS", 20, lo=0, hi=300),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
             notify_skipped=e.boolean("NOTIFY_SKIPPED", True),
             smtp_provider=provider,

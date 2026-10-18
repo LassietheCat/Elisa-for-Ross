@@ -83,7 +83,7 @@ class StateStore:
 @dataclass
 class ControlState:
     enabled: bool = False
-    poll_seconds: int = 20
+    poll_seconds: int = 60
     updated_at: str | None = None
     updated_by: str | None = None
 

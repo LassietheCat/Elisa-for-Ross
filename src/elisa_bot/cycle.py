@@ -8,7 +8,7 @@ from typing import Callable
 from .config import Settings
 from .detect import plan_month
 from .models import ApplyOutcome, ApplyResult, MonthReading, Slot, SlotTags
-from .notify import Notifier, build_notifier, cycle_message
+from .notify import Notifier, build_notifier, cycle_message, missed_openings_message
 from .site.applier import Applier
 from .site.calendar import CalendarReader
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
@@ -32,6 +32,7 @@ class CycleReport:
     notified: bool = False
     months_read: list[tuple[int, int]] = field(default_factory=list)
     signed_in: bool = False
+    open_count: int = 0
 
 
 def month_key(month: tuple[int, int]) -> str:
@@ -95,6 +96,7 @@ async def run_once(
     ]
     report = CycleReport()
     baselines: list[bool] = []
+    missed: list[str] = []
     try:
         if not session.started:
             await session.start()
@@ -115,7 +117,7 @@ async def run_once(
             await reader.go_to_month(year, month_number)
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
-            await _warn_about_missed_tags(session, reading)
+            missed += await _warn_about_missed_tags(session, reading)
             plan = plan_month(
                 reading.slots,
                 state,
@@ -125,6 +127,7 @@ async def run_once(
                 baseline=month_key((year, month_number)) in state.baseline_pending,
             )
             report.months_read.append((year, month_number))
+            report.open_count += sum(tags.available for tags in reading.slots.values())
             baselines.append(plan.baseline_only)
             report.available |= plan.available
             report.new |= plan.new
@@ -135,6 +138,8 @@ async def run_once(
                 report.results.append(result)
                 if result.clicked:
                     state.record_apply(slot, clock())
+        if missed:
+            await notifier.send(missed_openings_message(missed))
     except Exception as exc:
         error = exc if isinstance(exc, SiteError) else None
         if not isinstance(exc, (InvalidCredentials, VerificationRequired)):
@@ -181,23 +186,30 @@ async def run_once(
     return report
 
 
-async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -> None:
+async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -> list[str]:
     key = month_key((reading.year, reading.month))
+    month_name = dt.date(reading.year, reading.month, 1).strftime("%B %Y")
+    problems = []
     if reading.unknown_words:
         words = ", ".join(sorted(reading.unknown_words))
-        session.warn_once(("labels", key, words), "%s: calendar tags with labels the bot doesn't know: %s", key, words)
+        if session.warn_once(("labels", key, words), "%s: calendar tags with labels the bot doesn't know: %s", key, words):
+            problems.append(f"{month_name}: calendar tags with labels the bot doesn't know ({words}).")
     for day, count in sorted(reading.unread.items()):
-        session.warn_once(("unread", day, count), "%s: %d calendar tag(s) the bot couldn't read", day, count)
+        if session.warn_once(("unread", day, count), "%s: %d calendar tag(s) the bot couldn't read", day, count):
+            problems.append(f"{day:%a %b} {day.day}: {count} calendar tag(s) the bot couldn't read.")
     site_open = await session.site_open_count()
     shown = sum(tags.available for tags in reading.slots.values())
     if site_open is not None and site_open != shown:
-        session.warn_once(
+        newly = session.warn_once(
             ("open count", key, site_open, shown),
             "%s: Elisa's own count shows %d open work order(s), the calendar shows %d",
             key,
             site_open,
             shown,
         )
+        if newly and site_open > shown:
+            problems.append(f"{month_name}: Elisa lists {site_open} open work order(s), but the bot saw {shown} on the calendar.")
+    return problems
 
 
 async def _notify(notifier: Notifier, settings: Settings, results: list[ApplyResult], skipped: list[Slot]) -> bool:

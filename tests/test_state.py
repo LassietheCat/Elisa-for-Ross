@@ -59,7 +59,7 @@ def test_switch_file_defaults_off_and_clamps(tmp_path):
     now = dt.datetime(2026, 10, 9, 10, 0, tzinfo=ZoneInfo("America/New_York"))
     settings = Settings(data_dir=tmp_path)
     store = ControlStore(settings)
-    assert store.load() == ControlState(enabled=False, poll_seconds=20)
+    assert store.load() == ControlState(enabled=False, poll_seconds=60)
     control = store.update(by="web", now=now, enabled=True, poll_seconds=5)
     assert (control.enabled, control.poll_seconds, control.updated_by) == (True, 15, "web")
     assert store.load() == control

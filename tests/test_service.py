@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import datetime as dt
 from email.utils import format_datetime
 from typing import Callable
@@ -12,11 +13,11 @@ from playwright.async_api import Error as PlaywrightError
 from elisa_bot import service
 from elisa_bot.cycle import CycleReport
 from elisa_bot.notify import Message
-from elisa_bot.service import FailureAlerts, MonthRotation, next_delay, run_forever
+from elisa_bot.service import FailureAlerts, MonthRotation, QuickCheck, next_delay, run_forever
 from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignInPaused, SiteBusy
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
-from elisa_bot.state import ControlStore, StateStore
+from elisa_bot.state import BotState, ControlStore, StateStore
 from tests.conftest import fixed_now, make_settings, wo
 
 
@@ -45,7 +46,9 @@ async def until(predicate: Callable[[], bool], timeout: float = 60.0) -> None:
 
 
 def fast(settings):
-    return dataclasses.replace(settings, poll_seconds=1, min_poll_seconds=1, quiet_after_sign_in_seconds=0)
+    return dataclasses.replace(
+        settings, poll_seconds=1, min_poll_seconds=1, quiet_after_sign_in_seconds=0, quick_check_seconds=0
+    )
 
 
 def start(settings, capture):
@@ -382,3 +385,103 @@ async def test_openings_already_listed_in_any_month_are_only_recorded(mock, tmp_
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
+
+
+class CountingSession:
+    def __init__(self, *counts):
+        self.counts = list(counts)
+        self.ranges = []
+
+    async def count_open(self, start, end, today):
+        self.ranges.append((start, end, today))
+        value = self.counts.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+async def test_quick_check_reads_the_calendar_only_when_elisas_count_goes_up(tmp_path):
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
+    session = CountingSession(0, 0, 1, 1, None, 0, 2)
+    assert [await quick.check(session) for _ in range(7)] == [False, False, True, False, False, False, True]
+    assert session.ranges[0] == (dt.date(2026, 10, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7))
+
+
+async def test_a_refused_quick_check_pauses_until_the_next_calendar_read(tmp_path):
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
+    session = CountingSession(SiteBusy("the site answered 429 Too Many Requests"), 0, 1)
+    assert await quick.check(session) is False and quick.paused
+    assert await quick.check(session) is False and len(session.ranges) == 1
+    quick.calendar_read()
+    assert await quick.check(session) is False and await quick.check(session) is True
+
+
+async def test_refusals_slow_quick_checks_down_until_a_calm_half_hour(tmp_path):
+    now = [0.0]
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now, timer=lambda: now[0])
+    busy = SiteBusy("the site answered 429 Too Many Requests")
+    session = CountingSession(busy, busy, busy, busy, 0, 0)
+    everies = []
+    for _ in range(4):
+        await quick.check(session)
+        quick.calendar_read()
+        everies.append(quick.every)
+    assert everies == [40, 80, 120, 120]
+    now[0] = 1799
+    await quick.check(session)
+    assert quick.every == 120
+    now[0] = 1800
+    await quick.check(session)
+    assert quick.every == 20
+
+
+@pytest.mark.browser
+async def test_a_new_opening_is_found_by_the_quick_check_long_before_the_next_calendar_read(mock, tmp_path):
+    settings = dataclasses.replace(fast(make_settings(tmp_path, mock.base_url)), poll_seconds=30, quick_check_seconds=1)
+    StateStore(settings.state_path).save(BotState(baseline_done=True, watched_through="2026-12"))
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    capture = Capture()
+    loop = asyncio.get_running_loop()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: len(mock.stats()["calendar_months"]) >= 1)
+        await asyncio.sleep(3)
+        reads = len(mock.stats()["calendar_months"])
+        mock.set_work_orders([wo("2026-11-03", "PM", "available")])
+        added = loop.time()
+        await until(lambda: len(capture.messages) == 1, timeout=25)
+        assert loop.time() - added < 15
+        assert capture.messages[0].subject == "Elisa: test mode, opening Tue Nov 3 PM"
+        assert len(mock.stats()["calendar_months"]) >= reads + 2
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.browser
+async def test_quick_checks_keep_going_while_a_failed_calendar_read_waits(mock, tmp_path):
+    settings = dataclasses.replace(fast(make_settings(tmp_path, mock.base_url)), poll_seconds=30, quick_check_seconds=1)
+    StateStore(settings.state_path).save(BotState(baseline_done=True, watched_through="2026-12"))
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    mock.configure(schedule_error_times=1)
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: StateStore(settings.state_path).load().last_error == "data_request_failed")
+        await asyncio.sleep(3)
+        mock.set_work_orders([wo("2026-10-21", "AM", "available")])
+        await until(lambda: len(capture.messages) == 1, timeout=25)
+        assert capture.messages[0].subject == "Elisa: test mode, opening Wed Oct 21 AM"
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+async def test_quick_checks_say_once_when_they_start_and_once_when_they_get_no_answer(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
+    session = CountingSession(*([None] * 31), 0, 0)
+    for _ in range(33):
+        await quick.check(session)
+    assert caplog.text.count("Quick checks got no answer from Elisa for 300 s") == 1
+    assert caplog.text.count("Quick checks running: Elisa lists 0 open work order(s)") == 1
