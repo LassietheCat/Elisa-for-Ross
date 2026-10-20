@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from playwright.async_api import Error as PlaywrightError
 
 from elisa_bot.models import ApplyOutcome, Slot
 from elisa_bot.site.applier import Applier
@@ -110,3 +111,34 @@ async def test_opening_already_gone(mock, session):
     applier = await make_applier(session, test_mode=False)
     result = await applier.apply_one(S("2026-10-14 AM"))
     assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.MISSED, "gone", False)
+
+
+def flaky_recheck(monkeypatch, failures: int) -> list:
+    original = Applier._recheck
+    calls = []
+
+    async def recheck(self, slot):
+        calls.append(slot)
+        if len(calls) <= failures:
+            raise PlaywrightError("Timeout 15000ms exceeded")
+        return await original(self, slot)
+
+    monkeypatch.setattr(Applier, "_recheck", recheck)
+    return calls
+
+
+async def test_a_slow_result_is_looked_at_once_more_before_asking_the_owner_to_check(mock, session, monkeypatch):
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    calls = flaky_recheck(monkeypatch, failures=1)
+    result = await applier.apply_one(Slot.parse("2026-10-14 AM"))
+    assert result.outcome is ApplyOutcome.APPLIED and result.clicked and len(calls) == 2
+
+
+async def test_two_failed_looks_ask_the_owner_to_check(mock, session, monkeypatch):
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    calls = flaky_recheck(monkeypatch, failures=2)
+    result = await applier.apply_one(Slot.parse("2026-10-14 AM"))
+    assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.UNVERIFIED, "check_failed", True)
+    assert len(calls) == 2 and len(mock.stats()["accept_calls"]) == 1

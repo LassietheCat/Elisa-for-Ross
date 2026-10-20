@@ -5,6 +5,7 @@ import calendar
 import datetime as dt
 import logging
 import time
+import urllib.request
 from typing import Awaitable, Callable
 
 from playwright.async_api import Error as PlaywrightError
@@ -27,6 +28,7 @@ ALERT_AFTER_FAILURES = 3
 QUICK_SILENCE_S = 300
 QUICK_MAX_S = 120
 QUICK_RECOVER_S = 1800
+HEARTBEAT_STALE_S = 300
 
 
 def next_delay(failures: int, poll_seconds: int, *, busy: bool = False, retry_after: int | None = None) -> int:
@@ -65,6 +67,9 @@ class QuickCheck:
         self.misses = 0
         self.every = settings.quick_check_seconds
         self.refused_at: float | None = None
+        self.answered_at: float | None = None
+        self.hot_months: list[tuple[int, int]] | None = None
+        self.detected_at: float | None = None
 
     def reset(self) -> None:
         self.known = None
@@ -102,12 +107,71 @@ class QuickCheck:
                 log.warning("Quick checks got no answer from Elisa for %d s; relying on calendar reads", QUICK_SILENCE_S)
             return False
         self.misses = 0
+        self.answered_at = self.timer()
         previous, self.known = self.known, count
         if previous is None:
             log.info("Quick checks running: Elisa lists %d open work order(s) in the months checked", count)
         elif count > previous:
-            log.info("Elisa now lists %d open work order(s) in the months checked (was %d); reading them now", count, previous)
+            self.detected_at = time.monotonic()
+            self.hot_months = await self._months_with_openings(session, months, today)
+            log.info(
+                "Elisa now lists %d open work order(s) in the months checked (was %d); reading %s now",
+                count,
+                previous,
+                ", ".join(f"{y}-{m:02d}" for y, m in self.hot_months) if self.hot_months else "all of them",
+            )
             return True
+        return False
+
+    async def _months_with_openings(
+        self, session: SiteSession, months: list[tuple[int, int]], today: dt.date
+    ) -> list[tuple[int, int]] | None:
+        ranges = [(dt.date(y, m, 1), dt.date(y, m, calendar.monthrange(y, m)[1])) for y, m in months]
+        counts = await asyncio.gather(
+            *(session.count_open(start, end, today) for start, end in ranges), return_exceptions=True
+        )
+        if any(not isinstance(c, int) for c in counts):
+            return None
+        return [month for month, c in zip(months, counts) if c > 0] or None
+
+    def take_hot(self) -> tuple[list[tuple[int, int]] | None, float | None]:
+        hot, detected = self.hot_months, self.detected_at
+        self.hot_months, self.detected_at = None, None
+        return hot, detected
+
+
+class Heartbeat:
+    def __init__(self, url: str | None, every_s: float, timer: Callable[[], float] = time.monotonic) -> None:
+        self.url = url
+        self.every_s = every_s
+        self.timer = timer
+        self.healthy_at: float | None = None
+        self.sent_at: float | None = None
+        self.failing = False
+
+    def healthy(self) -> None:
+        self.healthy_at = self.timer()
+
+    async def beat(self) -> None:
+        if not self.url:
+            return
+        now = self.timer()
+        if self.healthy_at is None or now - self.healthy_at > HEARTBEAT_STALE_S:
+            return
+        if self.sent_at is not None and now - self.sent_at < self.every_s:
+            return
+        self.sent_at = now
+        ok = await asyncio.to_thread(_ping, self.url)
+        if not ok and not self.failing:
+            log.warning("Heartbeat to the outside monitor failed")
+        self.failing = not ok
+
+
+def _ping(url: str) -> bool:
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            return 200 <= response.status < 300
+    except (OSError, ValueError):
         return False
 
 
@@ -150,6 +214,7 @@ async def run_forever(
     alerts = FailureAlerts(notifier)
     rotation = MonthRotation()
     quick = QuickCheck(settings, clock)
+    heartbeat = Heartbeat(settings.heartbeat_url, settings.heartbeat_seconds)
     read_all = False
     loop = asyncio.get_running_loop()
     session: SiteSession | None = None
@@ -165,6 +230,8 @@ async def run_forever(
                 if session is not None:
                     session = await _shut(session, logout=settings.logout_when_off)
                 alerts.reset()
+                heartbeat.healthy()
+                await heartbeat.beat()
                 await _sleep(stop, 1.0)
                 continue
             if switched_on is not True:
@@ -184,9 +251,20 @@ async def run_forever(
                     rotation.reset()
                     quick.reset()
                 month = None if read_all else rotation.next(target_months(clock().date(), settings.months_to_check))
+                hot, detected_at = quick.take_hot() if read_all else (None, None)
                 read_all = False
-                report = await run_once(settings, selectors, notifier=notifier, now=clock, session=session, month=month)
+                report = await run_once(
+                    settings,
+                    selectors,
+                    notifier=notifier,
+                    now=clock,
+                    session=session,
+                    month=month,
+                    only=hot,
+                    detected_at=detected_at,
+                )
                 quick.calendar_read()
+                heartbeat.healthy()
                 if report.signed_in:
                     at_least = settings.quiet_after_sign_in_seconds
                     started = loop.time()
@@ -231,11 +309,18 @@ async def run_forever(
                 at_least=at_least,
                 quick=(lambda: quick.check(session)) if can_quick else None,
                 quick_every=quick.every,
+                tick=lambda: _tick(heartbeat, quick),
             )
     finally:
         if session is not None:
             await _shut(session, logout=settings.logout_when_off)
         log.info("Bot stopped")
+
+
+async def _tick(heartbeat: Heartbeat, quick: QuickCheck) -> None:
+    if quick.answered_at is not None and (heartbeat.healthy_at is None or quick.answered_at > heartbeat.healthy_at):
+        heartbeat.healthy_at = quick.answered_at
+    await heartbeat.beat()
 
 
 async def _shut(session: SiteSession, *, logout: bool) -> None:
@@ -266,10 +351,13 @@ async def _wait_for_next(
     at_least: int = 0,
     quick: Callable[[], Awaitable[bool]] | None = None,
     quick_every: float = 0,
+    tick: Callable[[], Awaitable[None]] | None = None,
 ) -> bool:
     loop = asyncio.get_running_loop()
     next_quick = loop.time() + quick_every
     while not stop.is_set():
+        if tick is not None:
+            await tick()
         control = controls.load()
         if not control.enabled:
             return False

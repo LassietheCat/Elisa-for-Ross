@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import pytest
 
@@ -331,5 +332,39 @@ async def test_single_month_checks_load_once_and_keep_the_other_months_memory(mo
         report = await run(settings, capture, session, month=(2026, 11))
         assert [str(r.slot) for r in report.results] == ["2026-11-24 AM"]
         assert store.load().seen == ["2026-10-14 AM", "2026-11-03 PM", "2026-11-24 AM"]
+    finally:
+        await session.close()
+
+
+async def test_a_quick_check_hit_reads_only_the_months_with_openings_and_times_the_result(mock, settings):
+    session = await signed_in(settings)
+    try:
+        await run(settings, Capture(), session)
+        mock.set_work_orders([wo("2026-12-08", "PM", "available")])
+        loads = len(mock.stats()["calendar_months"])
+        report = await run_once(
+            settings, Selectors(), notifier=Capture(), now=fixed_now, session=session,
+            only=[(2026, 12)], detected_at=time.monotonic(),
+        )
+        assert report.months_read == [(2026, 12)]
+        assert "2026-10" not in mock.stats()["calendar_months"][loads:]
+        entry = StateStore(settings.state_path).load().activity[-1]
+        assert (entry["slot"], entry["outcome"]) == ("2026-12-08 PM", "test_mode")
+        assert isinstance(entry["seconds"], float) and entry["seconds"] < 60
+    finally:
+        await session.close()
+
+
+async def test_an_opening_gone_before_the_read_is_recorded_as_gone(mock, settings):
+    session = await signed_in(settings)
+    try:
+        await run(settings, Capture(), session)
+        report = await run_once(
+            settings, Selectors(), notifier=Capture(), now=fixed_now, session=session,
+            only=[(2026, 11)], detected_at=time.monotonic(),
+        )
+        assert report.results == []
+        entry = StateStore(settings.state_path).load().activity[-1]
+        assert (entry["slot"], entry["outcome"]) == (None, "gone")
     finally:
         await session.close()

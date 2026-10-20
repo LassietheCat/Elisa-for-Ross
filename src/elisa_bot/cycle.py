@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -52,6 +53,10 @@ def reading_order(months: list[tuple[int, int]], displayed: tuple[int, int]) -> 
     return [displayed, *months[index + 1 :], *reversed(months[:index])]
 
 
+def _since(detected_at: float | None) -> float | None:
+    return None if detected_at is None else round(time.monotonic() - detected_at, 1)
+
+
 def _clock(settings: Settings, now: Clock | None) -> Clock:
     return now or (lambda: now_in(settings.timezone))
 
@@ -80,6 +85,8 @@ async def run_once(
     now: Clock | None = None,
     session: SiteSession | None = None,
     month: tuple[int, int] | None = None,
+    only: list[tuple[int, int]] | None = None,
+    detected_at: float | None = None,
 ) -> CycleReport:
     clock = _clock(settings, now)
     store = StateStore(settings.state_path)
@@ -105,7 +112,14 @@ async def run_once(
         report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
-        if month is None:
+        if month is None and only:
+            targets = [m for m in window if m in only] or list(window)
+            displayed = await reader.displayed_month()
+            if calendar_was_showing and displayed in targets:
+                await reader.refresh()
+                session.raise_for_problems()
+            months = reading_order(targets, displayed)
+        elif month is None:
             displayed = await reader.refresh()
             session.raise_for_problems()
             months = reading_order(window, displayed)
@@ -132,9 +146,19 @@ async def run_once(
             report.available |= plan.available
             report.new |= plan.new
             report.skipped_booked += plan.skipped_booked
+            for slot in plan.skipped_booked:
+                state.add_activity(to_iso(clock()), str(slot), "skipped", _since(detected_at))
             for slot in plan.to_apply:
                 result = await applier.apply_one(slot)
-                log.info("Opening %s: %s%s", slot, result.outcome.value, f" ({result.code})" if result.code else "")
+                seconds = _since(detected_at)
+                log.info(
+                    "Opening %s: %s%s%s",
+                    slot,
+                    result.outcome.value,
+                    f" ({result.code})" if result.code else "",
+                    f", {seconds} s after the quick check saw it" if seconds is not None else "",
+                )
+                state.add_activity(to_iso(clock()), str(slot), result.outcome.value, seconds)
                 report.results.append(result)
                 if result.clicked:
                     state.record_apply(slot, clock())
@@ -169,6 +193,10 @@ async def run_once(
     state.baseline_done = not state.baseline_pending
     if read_keys:
         state.watched_through = max(read_keys | {state.watched_through or ""})
+    if detected_at is not None and not report.new:
+        seconds = _since(detected_at)
+        state.add_activity(to_iso(clock()), None, "gone", seconds)
+        log.info("The new opening was gone %s s after the quick check saw it (taken before the bot could read it)", seconds)
     log.info(
         "Checked %s: %d open, %d new%s",
         ", ".join(sorted(read_keys)),

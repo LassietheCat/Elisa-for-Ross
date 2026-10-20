@@ -62,9 +62,13 @@ class Applier:
             await self._close_windows()
             tags = await self._recheck(slot)
         except (SiteError, PlaywrightError) as exc:
-            log.warning("Clicked Accept for %s but could not check the result (%s)", slot, type(exc).__name__)
+            log.warning("Clicked Accept for %s but could not check the result (%s); looking once more", slot, type(exc).__name__)
             await self._close_windows_quietly()
-            return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "check_failed", clicked=True)
+            try:
+                tags = await self._recheck(slot)
+            except (SiteError, PlaywrightError):
+                return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "check_failed", clicked=True)
+            site_reported_problem = False
 
         if tags is not None and tags.booked:
             return ApplyResult(slot, ApplyOutcome.APPLIED, "", clicked=True)

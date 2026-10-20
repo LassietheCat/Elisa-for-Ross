@@ -115,6 +115,8 @@ class Settings:
     max_sign_ins_per_hour: int = 6
     quiet_after_sign_in_seconds: int = 90
     quick_check_seconds: int = 20
+    heartbeat_url: str | None = field(default=None, repr=False)
+    heartbeat_seconds: int = 60
 
     notify_missed: bool = True
     notify_skipped: bool = True
@@ -186,6 +188,8 @@ class Settings:
             max_sign_ins_per_hour=e.integer("MAX_SIGN_INS_PER_HOUR", 6, lo=1, hi=60),
             quiet_after_sign_in_seconds=e.integer("QUIET_AFTER_SIGN_IN_SECONDS", 90, lo=0, hi=900),
             quick_check_seconds=e.integer("QUICK_CHECK_SECONDS", 20, lo=0, hi=300),
+            heartbeat_url=e.secret("HEARTBEAT_URL"),
+            heartbeat_seconds=e.integer("HEARTBEAT_SECONDS", 60, lo=10, hi=3600),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
             notify_skipped=e.boolean("NOTIFY_SKIPPED", True),
             smtp_provider=provider,
@@ -231,6 +235,7 @@ class Settings:
             self.elisa_email,
             self.elisa_password,
             self.smtp_password,
+            self.heartbeat_url,
             self.control_password,
             self.control_secret_key,
         ]

@@ -61,7 +61,8 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   - **Quick check, every `QUICK_CHECK_SECONDS` (20):** it asks Elisa how many open
     work orders there are in all the months it checks, in one small request: the
     count request the calendar page itself makes, replayed with the bot's date range.
-    When that number goes up, it reads the calendar at once and accepts. Openings
+    When that number goes up, it asks for each month's count (three small requests
+    at once) and opens only the months that have openings, then accepts. Openings
     are often taken within a minute, so this is what makes the bot fast.
   - **Calendar read, every `POLL_SECONDS` (60 by default, never below
     `MIN_POLL_SECONDS`, 15):** it reads one month, moving one month at a time
@@ -82,6 +83,15 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   1st, the month two ahead), its openings are only recorded, never acted on
   (`APPLY_ON_FIRST_RUN=false`). The bot remembers what it has seen month by month, so
   reading one month never makes another month's openings look new.
+- **Activity record:** each opening it handles is logged with the seconds from the
+  quick check seeing it to the result, and kept in `data/state.json` (last 50: time,
+  date and AM/PM, outcome). If a quick check sees a new opening but it's gone by the
+  time the calendar loads, that's recorded as "gone": taken before the bot could read it.
+- **Heartbeat:** with `HEARTBEAT_URL` set (for example a healthchecks.io check), the bot
+  pings it every `HEARTBEAT_SECONDS` (60) while it's working, or deliberately switched
+  off. If the server stops, the bot crashes, or nothing has gone well for 5 minutes, the
+  pings stop and the outside monitor emails you. The bot can't send its own alert when
+  its whole server is down.
 - **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
 - **Sign-in rejected** (wrong password or a verification step): it switches itself
   off, emails one alert, and never retries, so the account can't be locked out.

@@ -402,7 +402,7 @@ class CountingSession:
 
 async def test_quick_check_reads_the_calendar_only_when_elisas_count_goes_up(tmp_path):
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
-    session = CountingSession(0, 0, 1, 1, None, 0, 2)
+    session = CountingSession(0, 0, 1, 0, 1, 0, 1, None, 0, 2, 1, 0, 1)
     assert [await quick.check(session) for _ in range(7)] == [False, False, True, False, False, False, True]
     assert session.ranges[0] == (dt.date(2026, 10, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7))
 
@@ -452,7 +452,9 @@ async def test_a_new_opening_is_found_by_the_quick_check_long_before_the_next_ca
         await until(lambda: len(capture.messages) == 1, timeout=25)
         assert loop.time() - added < 15
         assert capture.messages[0].subject == "Elisa: test mode, opening Tue Nov 3 PM"
-        assert len(mock.stats()["calendar_months"]) >= reads + 2
+        assert mock.stats()["calendar_months"][reads:reads + 1] == ["2026-11"]
+        entry = StateStore(settings.state_path).load().activity[-1]
+        assert (entry["slot"], entry["outcome"]) == ("2026-11-03 PM", "test_mode") and entry["seconds"] < 15
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
@@ -485,3 +487,57 @@ async def test_quick_checks_say_once_when_they_start_and_once_when_they_get_no_a
         await quick.check(session)
     assert caplog.text.count("Quick checks got no answer from Elisa for 300 s") == 1
     assert caplog.text.count("Quick checks running: Elisa lists 0 open work order(s)") == 1
+
+
+async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not(monkeypatch):
+    sent = []
+    monkeypatch.setattr(service, "_ping", lambda url: sent.append(url) or True)
+    now = [0.0]
+    beat = service.Heartbeat("https://hc.example/ping", 60, timer=lambda: now[0])
+    await beat.beat()
+    beat.healthy()
+    await beat.beat()
+    now[0] = 30
+    await beat.beat()
+    now[0] = 61
+    await beat.beat()
+    now[0] = 400
+    await beat.beat()
+    beat.healthy()
+    await beat.beat()
+    assert len(sent) == 3
+    await service.Heartbeat(None, 60).beat()
+    assert len(sent) == 3
+
+
+async def test_a_rising_count_names_the_months_that_have_openings(tmp_path):
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
+    session = CountingSession(0, 1, 0, 0, 1)
+    assert await quick.check(session) is False
+    assert await quick.check(session) is True
+    hot, detected_at = quick.take_hot()
+    assert hot == [(2026, 12)] and detected_at is not None
+    assert session.ranges[2:] == [
+        (dt.date(2026, 10, 1), dt.date(2026, 10, 31), dt.date(2026, 10, 7)),
+        (dt.date(2026, 11, 1), dt.date(2026, 11, 30), dt.date(2026, 10, 7)),
+        (dt.date(2026, 12, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7)),
+    ]
+    assert quick.take_hot() == (None, None)
+
+
+@pytest.mark.browser
+async def test_the_always_on_bot_sends_heartbeats(monkeypatch, mock, tmp_path):
+    sent = []
+    monkeypatch.setattr(service, "_ping", lambda url: sent.append(url) or True)
+    settings = dataclasses.replace(fast(make_settings(tmp_path, mock.base_url)), heartbeat_url="https://hc.example/ping", heartbeat_seconds=1)
+    controls = ControlStore(settings)
+    controls.update(by="test", now=fixed_now(), enabled=True)
+    stop, task = start(settings, Capture())
+    try:
+        await until(lambda: len(sent) >= 2)
+        controls.update(by="test", now=fixed_now(), enabled=False)
+        count = len(sent)
+        await until(lambda: len(sent) >= count + 2)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)

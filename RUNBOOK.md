@@ -109,6 +109,19 @@ Put the block from [deploy/Caddyfile](deploy/Caddyfile), with that name, in
 `/etc/caddy/Caddyfile`, then `sudo systemctl reload caddy`. Caddy gets and renews the
 certificate itself. Moving to another name later is the same two steps.
 
+## Outside monitor
+
+The bot can't email when its whole server is down, so an outside service watches it:
+
+1. At healthchecks.io (free), add a check: period **5 minutes**, grace **5 minutes**. Under
+   Integrations, add the email addresses that should be told.
+2. Put the check's ping URL in `/etc/elisa-bot/secrets/heartbeat_url` (root:elisa, 640) and set
+   `HEARTBEAT_URL_FILE=/etc/elisa-bot/secrets/heartbeat_url` in `/etc/elisa-bot/env`.
+3. `sudo systemctl restart elisa-bot`. The check turns green within a minute.
+
+If the server stops, the bot crashes, or it fails for 5 minutes in a row, the pings stop and
+the monitor emails within about 10 minutes.
+
 ## First start
 
 ```bash

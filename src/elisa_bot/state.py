@@ -16,6 +16,7 @@ from .timeutil import to_iso
 log = logging.getLogger(__name__)
 
 STATE_VERSION = 1
+ACTIVITY_KEPT = 50
 
 
 @dataclass
@@ -31,6 +32,10 @@ class BotState:
     last_run_at: str | None = None
     last_run_ok: bool | None = None
     last_error: str | None = None
+    activity: list[dict] = field(default_factory=list)
+
+    def add_activity(self, at: str, slot: str | None, outcome: str, seconds: float | None) -> None:
+        self.activity = [*self.activity, {"at": at, "slot": slot, "outcome": outcome, "seconds": seconds}][-ACTIVITY_KEPT:]
 
     def seen_slots(self) -> set[Slot]:
         return {Slot.parse(text) for text in self.seen}
