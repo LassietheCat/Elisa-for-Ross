@@ -45,11 +45,13 @@ def test_prune_forgets_old_slots(tmp_path):
         applied={"2026-09-01 AM": "x", "2026-10-14 AM": "y"},
         attempts={"2026-09-02 PM": 1, "2026-10-15 PM": 1},
         applies_by_day={"2026-09-01": 1, "2026-10-07": 2},
+        jobs={"2026-09": {"slots": {}}, "2026-10": {"slots": {}}, "2026-12": {"slots": {}}},
     )
     state.prune(dt.date(2026, 10, 7))
     assert list(state.applied) == ["2026-10-14 AM"]
     assert list(state.attempts) == ["2026-10-15 PM"]
     assert list(state.applies_by_day) == ["2026-10-07"]
+    assert list(state.jobs) == ["2026-10", "2026-12"]
 
 
 def test_switch_file_defaults_off_and_clamps(tmp_path):

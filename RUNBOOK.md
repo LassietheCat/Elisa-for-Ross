@@ -149,6 +149,11 @@ when the count goes up or Elisa refuses one.
 - **Test alert:** the page's **Send test alert** button, or `elisa-bot test-email`. Both
   go to every recipient.
 - **Logs:** `journalctl -u elisa-bot --since today`; also `/var/lib/elisa-bot/data/logs/`.
+- **New jobs on the calendar:** `journalctl -u elisa-bot | grep -E "on the calendar|Booked jobs"`
+  lists every new, removed or changed job (date and AM/PM), with times. "Booked jobs"
+  lines come from the quick checks (within 20 s) and say when Elisa last listed an open
+  work order; "on the calendar" lines come from the calendar reads (within about
+  3 minutes) and name the half-day.
 - **After changing settings or secrets:** `sudo systemctl restart elisa-bot elisa-control`.
 - **Stopping:** `sudo systemctl stop elisa-bot` signs out of Elisa first (`KillMode=mixed`
   lets the bot close its own browser).

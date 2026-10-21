@@ -139,6 +139,10 @@ class SiteSession:
         }
 
     async def count_open(self, start: dt.date, end: dt.date, today: dt.date) -> int | None:
+        counts = await self.counts(start, end, today)
+        return None if counts is None else counts["new"]
+
+    async def counts(self, start: dt.date, end: dt.date, today: dt.date) -> dict[str, int] | None:
         if self._page is None or self._count_request is None or self._api_headers is None:
             return None
         url, template = self._count_request
@@ -165,8 +169,9 @@ class SiteSession:
         except (PlaywrightError, ValueError):
             return None
         counts = data.get("responseCount") if isinstance(data, dict) else None
-        value = counts.get("new") if isinstance(counts, dict) else None
-        return value if type(value) is int else None
+        if not isinstance(counts, dict) or type(counts.get("new")) is not int:
+            return None
+        return {name: value for name, value in counts.items() if type(value) is int}
 
     def _on_response(self, response: Response) -> None:
         if response.request.resource_type not in _WATCHED_TYPES:

@@ -12,12 +12,13 @@ from playwright.async_api import Error as PlaywrightError
 
 from .config import Settings
 from .cycle import run_once, target_months
+from .models import JOB_STATUSES
 from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
 from .state import ControlStore, write_json
-from .timeutil import now_in, to_iso
+from .timeutil import now_in, short_time, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +73,10 @@ class QuickCheck:
         self.answered_wall: str | None = None
         self.hot_months: list[tuple[int, int]] | None = None
         self.detected_at: float | None = None
+        self.jobs: dict[str, int] | None = None
+        self.jobs_day: dt.date | None = None
+        self.open_seen: dt.datetime | None = None
+        self.answering_since: dt.datetime | None = None
 
     def reset(self) -> None:
         self.known = None
@@ -94,7 +99,7 @@ class QuickCheck:
         start = dt.date(months[0][0], months[0][1], 1)
         end = dt.date(last_year, last_month, calendar.monthrange(last_year, last_month)[1])
         try:
-            count = await session.count_open(start, end, today)
+            counts = await session.counts(start, end, today)
         except SiteBusy:
             self.paused = True
             self.refused_at = self.timer()
@@ -103,17 +108,27 @@ class QuickCheck:
                 "Quick check refused by the site (429); pausing until the next calendar read, then every %d s", self.every
             )
             return False
-        if count is None:
+        if counts is None:
             self.misses += 1
             if self.misses == max(1, QUICK_SILENCE_S // max(1, self.every)):
                 log.warning("Quick checks got no answer from Elisa for %d s; relying on calendar reads", QUICK_SILENCE_S)
             return False
+        count = counts["new"]
         self.misses = 0
+        now = self.clock()
         self.answered_at = self.timer()
-        self.answered_wall = to_iso(self.clock())
+        self.answered_wall = to_iso(now)
+        self.answering_since = self.answering_since or now
+        if count > 0:
+            self.open_seen = now
+        self._note_jobs(counts, today, now)
         previous, self.known = self.known, count
         if previous is None:
-            log.info("Quick checks running: Elisa lists %d open work order(s) in the months checked", count)
+            log.info(
+                "Quick checks running: Elisa lists %d open work order(s) in the months checked, and %d booked job(s) from today",
+                count,
+                sum(self.jobs.values()),
+            )
         elif count > previous:
             self.detected_at = time.monotonic()
             self.hot_months = await self._months_with_openings(session, months, today)
@@ -125,6 +140,29 @@ class QuickCheck:
             )
             return True
         return False
+
+    def _note_jobs(self, counts: dict[str, int], today: dt.date, now: dt.datetime) -> None:
+        jobs = {status: counts.get(status, 0) for status in JOB_STATUSES}
+        previous, previous_day = self.jobs, self.jobs_day
+        self.jobs, self.jobs_day = jobs, today
+        if previous is None or previous_day != today or sum(jobs.values()) == sum(previous.values()):
+            return
+        changes = ", ".join(
+            f"{status.capitalize()} {previous[status]}->{jobs[status]}"
+            for status in JOB_STATUSES
+            if jobs[status] != previous[status]
+        )
+        if self.open_seen is not None:
+            listed = f"open work orders last listed at {short_time(self.open_seen, now.date())}"
+        else:
+            listed = f"no open work order listed since {short_time(self.answering_since or now, now.date())}"
+        log.info(
+            "Booked jobs in Elisa's count went from %d to %d (%s); %s",
+            sum(previous.values()),
+            sum(jobs.values()),
+            changes,
+            listed,
+        )
 
     async def _months_with_openings(
         self, session: SiteSession, months: list[tuple[int, int]], today: dt.date

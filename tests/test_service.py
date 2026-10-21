@@ -20,7 +20,7 @@ from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignIn
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
 from elisa_bot.state import BotState, ControlStore, StateStore
-from tests.conftest import fixed_now, make_settings, wo
+from tests.conftest import FIXED_NOW, fixed_now, make_settings, wo
 
 
 class Capture:
@@ -390,16 +390,20 @@ async def test_openings_already_listed_in_any_month_are_only_recorded(mock, tmp_
 
 
 class CountingSession:
-    def __init__(self, *counts):
-        self.counts = list(counts)
+    def __init__(self, *answers):
+        self.answers = list(answers)
         self.ranges = []
 
     async def count_open(self, start, end, today):
+        counts = await self.counts(start, end, today)
+        return None if counts is None else counts["new"]
+
+    async def counts(self, start, end, today):
         self.ranges.append((start, end, today))
-        value = self.counts.pop(0)
+        value = self.answers.pop(0)
         if isinstance(value, Exception):
             raise value
-        return value
+        return {"new": value} if isinstance(value, int) else value
 
 
 async def test_quick_check_reads_the_calendar_only_when_elisas_count_goes_up(tmp_path):
@@ -489,6 +493,37 @@ async def test_quick_checks_say_once_when_they_start_and_once_when_they_get_no_a
         await quick.check(session)
     assert caplog.text.count("Quick checks got no answer from Elisa for 300 s") == 1
     assert caplog.text.count("Quick checks running: Elisa lists 0 open work order(s)") == 1
+
+
+async def test_quick_checks_log_changes_in_elisas_count_of_booked_jobs(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    clock = [FIXED_NOW]
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), lambda: clock[0])
+
+    def counts(new, applied, assigned, confirmed):
+        return {"new": new, "applied": applied, "assigned": assigned, "confirmed": confirmed}
+
+    session = CountingSession(
+        counts(0, 0, 10, 1),
+        counts(0, 0, 9, 2),
+        counts(0, 1, 9, 2),
+        counts(1, 1, 9, 2), 0, 1, 0,
+        counts(0, 1, 10, 2),
+        counts(0, 0, 8, 1),
+        counts(0, 0, 7, 1),
+    )
+    moments = [FIXED_NOW + dt.timedelta(seconds=20 * i) for i in range(5)]
+    moments += [FIXED_NOW + dt.timedelta(days=1), FIXED_NOW + dt.timedelta(days=1, seconds=20)]
+    results = []
+    for moment in moments:
+        clock[0] = moment
+        results.append(await quick.check(session))
+    assert results == [False, False, False, True, False, False, False]
+    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Booked jobs")] == [
+        "Booked jobs in Elisa's count went from 11 to 12 (Applied 0->1); no open work order listed since 10:00:00",
+        "Booked jobs in Elisa's count went from 12 to 13 (Assigned 9->10); open work orders last listed at 10:01:00",
+        "Booked jobs in Elisa's count went from 9 to 8 (Assigned 8->7); open work orders last listed at Oct 7 10:01:00",
+    ]
 
 
 async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not(monkeypatch):

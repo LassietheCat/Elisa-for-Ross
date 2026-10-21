@@ -35,6 +35,7 @@ class BotState:
     last_error: str | None = None
     activity: list[dict] = field(default_factory=list)
     daily: dict[str, dict[str, int]] = field(default_factory=dict)
+    jobs: dict[str, dict] = field(default_factory=dict)
 
     def count(self, day: dt.date, key: str) -> None:
         entry = self.daily.setdefault(day.isoformat(), {})
@@ -65,6 +66,7 @@ class BotState:
             k: v for k, v in self.applies_by_day.items() if dt.date.fromisoformat(k) >= cutoff
         }
         self.daily = {k: v for k, v in self.daily.items() if dt.date.fromisoformat(k) >= cutoff}
+        self.jobs = {k: v for k, v in self.jobs.items() if k >= f"{today:%Y-%m}"}
 
 
 class StateStore:

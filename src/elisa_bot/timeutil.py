@@ -15,6 +15,12 @@ def to_iso(moment: dt.datetime) -> str:
     return moment.isoformat(timespec="seconds")
 
 
+def short_time(moment: dt.datetime, today: dt.date) -> str:
+    if moment.date() == today:
+        return f"{moment:%H:%M:%S}"
+    return f"{moment:%b} {moment.day} {moment:%H:%M:%S}"
+
+
 def add_months(year: int, month: int, delta: int) -> tuple[int, int]:
     index = year * 12 + (month - 1) + delta
     return index // 12, index % 12 + 1

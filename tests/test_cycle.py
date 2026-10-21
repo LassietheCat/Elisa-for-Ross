@@ -371,6 +371,33 @@ async def test_an_opening_gone_before_the_read_is_recorded_as_gone(mock, setting
         await session.close()
 
 
+async def test_new_gone_and_changed_jobs_on_the_calendar_are_logged_by_date_and_half_day(mock, settings, caplog):
+    caplog.set_level(logging.INFO)
+    mock.set_work_orders([wo("2026-10-21", "PM", "assigned"), wo("2026-11-04", "AM", "assigned")])
+    await run(settings, Capture())
+    assert "2026-10: watching 1 booked half-day(s) for new jobs" in caplog.text
+    mock.set_work_orders([
+        wo("2026-10-21", "PM", "confirmed"),
+        wo("2026-10-22", "AM", "applied"),
+        wo("2026-10-23", "PM", "assigned"),
+        wo("2026-10-23", "PM", "assigned"),
+    ])
+    await run(settings, Capture())
+    assert [r.getMessage() for r in caplog.records if "on the calendar:" in r.getMessage()] == [
+        "Job changed on the calendar: Wed Oct 21 PM, now 1 Confirmed (was 1 Assigned at 10:00:00)",
+        "New job on the calendar: Thu Oct 22 AM, now 1 Applied (was none at 10:00:00)",
+        "New job on the calendar: Fri Oct 23 PM, now 2 Assigned (was none at 10:00:00)",
+        "Job gone on the calendar: Wed Nov 4 AM, now none (was 1 Assigned at 10:00:00)",
+    ]
+    jobs = StateStore(settings.state_path).load().jobs
+    assert jobs["2026-10"]["slots"] == {
+        "2026-10-21 PM": {"confirmed": 1},
+        "2026-10-22 AM": {"applied": 1},
+        "2026-10-23 PM": {"assigned": 2},
+    }
+    assert jobs["2026-11"]["slots"] == {} and jobs["2026-12"]["read_at"] == "2026-10-07T10:00:00-04:00"
+
+
 async def test_an_opening_on_a_day_off_is_not_accepted(mock, tmp_path):
     settings = make_settings(tmp_path, mock.base_url, test_mode=False)
     capture = Capture()

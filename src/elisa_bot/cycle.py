@@ -16,7 +16,7 @@ from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
 from .state import BotState, ControlStore, StateStore
-from .timeutil import add_months, now_in, to_iso
+from .timeutil import add_months, now_in, short_time, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +134,7 @@ async def run_once(
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
             missed += await _warn_about_missed_tags(session, reading)
+            _note_job_changes(state, reading, clock())
             plan = plan_month(
                 reading.slots,
                 state,
@@ -220,6 +221,38 @@ async def run_once(
 
     report.notified = await _notify(notifier, settings, report.results, report.skipped_booked, report.skipped_day_off)
     return report
+
+
+def _note_job_changes(state: BotState, reading: MonthReading, now: dt.datetime) -> None:
+    key = month_key((reading.year, reading.month))
+    jobs = {str(slot): tags.jobs() for slot, tags in sorted(reading.slots.items()) if tags.booked}
+    before = state.jobs.get(key)
+    state.jobs[key] = {"read_at": to_iso(now), "slots": jobs}
+    if not isinstance(before, dict) or not isinstance(before.get("slots"), dict):
+        log.info("%s: watching %d booked half-day(s) for new jobs", key, len(jobs))
+        return
+    earlier = before["slots"]
+    try:
+        when = short_time(dt.datetime.fromisoformat(before["read_at"]), now.date())
+    except (KeyError, TypeError, ValueError):
+        when = "the last read"
+    for slot in sorted(earlier.keys() | jobs.keys()):
+        was, current = earlier.get(slot, {}), jobs.get(slot, {})
+        if was == current:
+            continue
+        change = sum(current.values()) - sum(was.values())
+        log.info(
+            "%s on the calendar: %s, now %s (was %s at %s)",
+            "New job" if change > 0 else "Job gone" if change < 0 else "Job changed",
+            Slot.parse(slot).label(),
+            _describe_jobs(current),
+            _describe_jobs(was),
+            when,
+        )
+
+
+def _describe_jobs(jobs: dict[str, int]) -> str:
+    return ", ".join(f"{count} {status.capitalize()}" for status, count in jobs.items()) or "none"
 
 
 async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -> list[str]:

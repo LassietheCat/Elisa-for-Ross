@@ -33,6 +33,9 @@ class Slot:
         return f"{self.date:%a %b} {self.date.day} {self.half.value}"
 
 
+JOB_STATUSES = ("applied", "assigned", "confirmed")
+
+
 @dataclass
 class SlotTags:
     available: int = 0
@@ -43,6 +46,9 @@ class SlotTags:
     @property
     def booked(self) -> bool:
         return self.applied > 0 or self.assigned > 0 or self.confirmed > 0
+
+    def jobs(self) -> dict[str, int]:
+        return {status: getattr(self, status) for status in JOB_STATUSES if getattr(self, status)}
 
 
 @dataclass

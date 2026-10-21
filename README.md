@@ -87,6 +87,14 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   quick check seeing it to the result, and kept in `data/state.json` (last 50: time,
   date and AM/PM, outcome). If a quick check sees a new opening but it's gone by the
   time the calendar loads, that's recorded as "gone": taken before the bot could read it.
+- **Job watch:** the bot logs every change to the owner's jobs, by date and AM/PM only,
+  to show when and how new jobs arrive. Each quick-check answer already includes Elisa's
+  count of the owner's Applied, Assigned and Confirmed jobs from today on; when that
+  total changes, the bot logs it with the last time Elisa listed an open work order.
+  Each calendar read compares the month with its previous read and logs lines such as
+  "New job on the calendar: Thu Oct 29 PM, now 1 Assigned (was none at 14:28:41)", or
+  "Job gone" / "Job changed". The previous read of each month is kept in
+  `data/state.json`. This adds no requests.
 - **Heartbeat:** with `HEARTBEAT_URL` set (for example a healthchecks.io check), the bot
   pings it every `HEARTBEAT_SECONDS` (60) while it's working, or deliberately switched
   off. If the server stops, the bot crashes, or nothing has gone well for 5 minutes, the

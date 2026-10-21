@@ -100,6 +100,7 @@ async def test_counts_open_work_orders_for_any_range_by_replaying_the_pages_own_
     await asyncio.sleep(0.5)
     fetches = mock.stats()["calendar_fetches"]
     assert await session.count_open(OCT_1, DEC_31, TODAY) == 3
+    assert await session.counts(OCT_1, DEC_31, TODAY) == {"new": 3, "applied": 0, "assigned": 1, "confirmed": 0}
     assert await session.count_open(dt.date(2026, 11, 1), dt.date(2026, 11, 30), TODAY) == 1
     assert mock.stats()["calendar_fetches"] == fetches
 
