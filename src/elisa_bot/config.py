@@ -220,6 +220,10 @@ class Settings:
         return self.data_dir / "control.json"
 
     @property
+    def status_path(self) -> Path:
+        return self.data_dir / "status.json"
+
+    @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 

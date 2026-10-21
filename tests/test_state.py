@@ -66,3 +66,30 @@ def test_switch_file_defaults_off_and_clamps(tmp_path):
     assert stat.S_IMODE(settings.control_path.stat().st_mode) == 0o600
     settings.control_path.write_text("{broken")
     assert store.load().enabled is False
+
+
+def test_days_off_are_valid_future_dates_only(tmp_path):
+    from elisa_bot.config import Settings
+    from elisa_bot.state import ControlStore
+
+    now = dt.datetime(2026, 10, 20, 10, 0, tzinfo=ZoneInfo("America/New_York"))
+    store = ControlStore(Settings(data_dir=tmp_path))
+    store.update(by="test", now=now, add_day_off=dt.date(2026, 10, 22))
+    store.update(by="test", now=now, add_day_off=dt.date(2026, 10, 19))
+    control = store.update(by="test", now=now, add_day_off=dt.date(2026, 10, 22))
+    assert control.days_off == ["2026-10-22"] and control.days_off_dates() == {dt.date(2026, 10, 22)}
+    store.path.write_text(json.dumps({"days_off": ["2026-11-03", "not a date", 5]}))
+    assert store.load().days_off == ["2026-11-03"]
+    assert store.update(by="test", now=now, remove_day_off=dt.date(2026, 11, 3)).days_off == []
+
+
+def test_daily_counts_and_activity_stay_small(tmp_path):
+    state = BotState()
+    state.count(dt.date(2026, 10, 1), "reads")
+    state.count(dt.date(2026, 10, 20), "reads")
+    state.count(dt.date(2026, 10, 20), "reads")
+    state.prune(dt.date(2026, 10, 20))
+    assert state.daily == {"2026-10-20": {"reads": 2}}
+    for i in range(60):
+        state.add_activity(f"2026-10-20T10:{i:02d}:00-04:00", None, "gone", 1.0)
+    assert len(state.activity) == 50 and state.activity[-1]["at"] == "2026-10-20T10:59:00-04:00"

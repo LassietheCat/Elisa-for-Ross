@@ -104,11 +104,13 @@ def cycle_message(
     *,
     skipped: Iterable[Slot] = (),
     include_missed: bool = True,
+    days_off: Iterable[Slot] = (),
 ) -> Message | None:
     by_outcome = {outcome: [r.slot for r in results if r.outcome is outcome] for outcome in ApplyOutcome}
     if not include_missed:
         by_outcome[ApplyOutcome.MISSED] = []
     skipped = sorted(skipped)
+    days_off = sorted(days_off)
 
     lines = []
     if by_outcome[ApplyOutcome.APPLIED]:
@@ -126,6 +128,8 @@ def cycle_message(
         lines.append(f"Opening seen but Accept could not be tried, will retry: {_labels(by_outcome[ApplyOutcome.ERROR])}.")
     if skipped:
         lines.append(f"Skipped, you already have a job then: {_labels(skipped)}.")
+    if days_off:
+        lines.append(f"Not accepted, marked as a day off: {_labels(days_off)}.")
     if not lines:
         return None
 
@@ -136,8 +140,10 @@ def cycle_message(
             more = f" (+{len(slots) - 1} more)" if len(slots) > 1 else ""
             subject = f"Elisa: {wording} {slots[0].label()}{more}"
             break
-    if subject is None:
+    if subject is None and skipped:
         subject = f"Elisa: opening {skipped[0].label()} (already booked)"
+    if subject is None:
+        subject = f"Elisa: opening {days_off[0].label()} (day off)"
     return Message(subject, " ".join(lines))
 
 

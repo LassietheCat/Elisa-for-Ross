@@ -202,3 +202,8 @@ def test_trouble_alert_says_why_and_holds_no_job_details():
     assert message.text.startswith("The last 3 checks failed. Elisa asked the bot to slow down (too many requests).")
     assert "Unexpected problem (odd_code)." in trouble_message(3, "odd_code").text
     assert recovered_message(4) == Message("Elisa: bot is working again", "Checks are working again after 4 failed tries.")
+
+
+def test_an_opening_on_a_day_off_is_reported_as_a_day_off():
+    message = cycle_message([], days_off=[S("2026-10-14 AM")])
+    assert message == Message("Elisa: opening Wed Oct 14 AM (day off)", "Not accepted, marked as a day off: Wed Oct 14 AM.")

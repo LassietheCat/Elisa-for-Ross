@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import logging
 import datetime as dt
+import json
+import logging
+import stat
 from email.utils import format_datetime
 from typing import Callable
 
@@ -538,6 +540,28 @@ async def test_the_always_on_bot_sends_heartbeats(monkeypatch, mock, tmp_path):
         controls.update(by="test", now=fixed_now(), enabled=False)
         count = len(sent)
         await until(lambda: len(sent) >= count + 2)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.browser
+async def test_the_always_on_bot_writes_a_private_status_file_for_the_page(mock, tmp_path):
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    stop, task = start(settings, Capture())
+    try:
+        def signed_in_status() -> bool:
+            try:
+                return bool(json.loads(settings.status_path.read_text()).get("signed_in_at"))
+            except (OSError, ValueError):
+                return False
+
+        await until(signed_in_status)
+        data = json.loads(settings.status_path.read_text())
+        assert set(data) == {"updated_at", "running_since", "signed_in_at", "quick", "heartbeat"}
+        assert data["heartbeat"] == {"configured": False, "ok_at": None, "failing": False}
+        assert stat.S_IMODE(settings.status_path.stat().st_mode) == 0o600
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)

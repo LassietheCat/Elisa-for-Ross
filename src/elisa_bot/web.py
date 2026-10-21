@@ -4,15 +4,17 @@ import datetime as dt
 import hashlib
 import hmac
 import html
+import json
 import secrets
 import time
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from .config import Settings
 from .models import Slot
@@ -25,6 +27,32 @@ SESSION_SECONDS = 30 * 24 * 3600
 LOGIN_LIMIT = 5
 LOGIN_WINDOW_S = 15 * 60
 INTERVAL_CHOICES = (15, 20, 30, 60, 120, 300, 600)
+ACTIVITY_SHOWN = 10
+STATIC = Path(__file__).parent / "static"
+ICON_SIZES = (180, 192, 512)
+MANIFEST = {
+    "name": "Elisa bot",
+    "short_name": "Elisa bot",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#f5f5f7",
+    "theme_color": "#1a7f37",
+    "icons": [
+        {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
+        {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+    ],
+}
+STATUS_STALE_S = 120
+OUTCOMES = {
+    "applied": "accepted",
+    "missed": "taken by someone else first",
+    "unverified": "Accept clicked, please check Elisa",
+    "error": "found, but Accept couldn't be tried",
+    "test_mode": "found (test mode, not clicked)",
+    "skipped": "skipped, already booked then",
+    "day off": "skipped, day off",
+    "gone": "a new opening was gone before the bot could read it",
+}
 FLASH = {
     "sent": "Test alert sent. Check your inbox.",
     "failed": "The test alert could not be sent. Check the email settings.",
@@ -33,7 +61,8 @@ FLASH = {
 
 SECURITY_HEADERS = {
     "Content-Security-Policy": (
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; "
+        "form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
     ),
     "X-Frame-Options": "DENY",
     "X-Content-Type-Options": "nosniff",
@@ -44,6 +73,11 @@ SECURITY_HEADERS = {
 LAYOUT = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#1a7f37">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Elisa bot">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icon-180.png">
 %%REFRESH%%<title>Elisa bot</title>
 <style>
 :root{color-scheme:light dark;--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--on:#1a7f37;--stop:#c62828;
@@ -62,8 +96,11 @@ button{font:inherit;border:0;border-radius:12px;padding:12px 16px;cursor:pointer
 .big{width:100%;font-size:20px;font-weight:700;color:#fff;padding:18px;margin-top:12px}
 .big.turn-on{background:var(--on)} .big.turn-off{background:var(--stop)}
 .secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
-select,input[type=password]{font:inherit;padding:10px;border-radius:10px;border:1px solid var(--border);
-background:var(--card);color:var(--text)}
+select,input[type=password],input[type=date]{font:inherit;padding:10px;border-radius:10px;
+border:1px solid var(--border);background:var(--card);color:var(--text)}
+.small{padding:6px 10px;font-size:14px}
+ul.plain{list-style:none;padding-left:0} ul.plain li{display:flex;justify-content:space-between;align-items:center;
+gap:8px;margin:4px 0}
 input[type=password]{width:100%;box-sizing:border-box;margin:8px 0 12px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 ul{margin:6px 0 0;padding-left:20px}
@@ -99,9 +136,90 @@ def _when(text: str | None, tz: str) -> str:
     return f"{moment:%a %b} {moment.day}, {moment.hour % 12 or 12}:{moment:%M:%S} {moment:%p}"
 
 
+def _read_status(settings: Settings) -> dict:
+    try:
+        data = json.loads(settings.status_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _age(text: str | None, now: dt.datetime) -> float | None:
+    if not text:
+        return None
+    try:
+        return (now - dt.datetime.fromisoformat(text)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def _right_now(settings: Settings, control: ControlState, state: BotState, status: dict, now: dt.datetime) -> str:
+    tz = settings.timezone
+    lines = []
+    if control.enabled:
+        quick = status.get("quick") if isinstance(status.get("quick"), dict) else {}
+        if not settings.quick_check_seconds:
+            pass
+        elif quick.get("paused"):
+            lines.append("<p>Quick checks: paused after Elisa refused one; they restart after the next calendar read.</p>")
+        elif quick.get("answered_at"):
+            count = quick.get("open_count")
+            listed = f" Elisa lists {count} open order{'' if count == 1 else 's'}." if isinstance(count, int) else ""
+            lines.append(
+                f"<p>Quick checks: every {html.escape(str(quick.get('every')))} seconds, "
+                f"last answer {_when(quick['answered_at'], tz)}.{listed}</p>"
+            )
+        else:
+            lines.append("<p>Quick checks: starting.</p>")
+        if status.get("signed_in_at"):
+            lines.append(f"<p>Signed in to Elisa since {_when(status['signed_in_at'], tz)}.</p>")
+        age = _age(status.get("updated_at"), now)
+        if age is not None and age > STATUS_STALE_S:
+            lines.append(f'<p class="warn">The bot hasn\'t reported for {int(age // 60)} min. It may not be running.</p>')
+    beat = status.get("heartbeat") if isinstance(status.get("heartbeat"), dict) else {}
+    if not beat.get("configured"):
+        lines.append('<p class="muted">Outside alarm: not set up.</p>')
+    elif beat.get("failing"):
+        lines.append('<p class="warn">Outside alarm: the last signal failed.</p>')
+    elif beat.get("ok_at"):
+        lines.append(f"<p>Outside alarm: on, last signal {_when(beat['ok_at'], tz)}.</p>")
+    today = now.date().isoformat()
+    counts = state.daily.get(today, {})
+    events = [entry for entry in state.activity if str(entry.get("at", "")).startswith(today)]
+    accepted = sum(1 for entry in events if entry.get("outcome") == "applied")
+    missed = sum(1 for entry in events if entry.get("outcome") in ("missed", "gone"))
+    lines.append(
+        f'<p class="muted">Today: {counts.get("reads", 0)} calendar reads, {counts.get("failed", 0)} failed; '
+        f"{accepted} accepted, {missed} missed.</p>"
+    )
+    return '<div class="card"><strong>Right now</strong>' + "".join(lines) + "</div>"
+
+
+def _recent_activity(settings: Settings, state: BotState) -> str:
+    items = []
+    for entry in reversed(state.activity[-ACTIVITY_SHOWN:]):
+        outcome = OUTCOMES.get(str(entry.get("outcome")), html.escape(str(entry.get("outcome"))))
+        try:
+            slot = f"{Slot.parse(entry['slot']).label()}: " if entry.get("slot") else ""
+        except (TypeError, ValueError):
+            slot = ""
+        seconds = entry.get("seconds")
+        timing = f", {seconds} s after the bot noticed it" if isinstance(seconds, (int, float)) else ""
+        items.append(f"<li>{_when(entry.get('at'), settings.timezone)}: {slot}{outcome}{timing}</li>")
+    body = "".join(items) or "<li>No openings yet.</li>"
+    return f'<div class="card"><strong>Recent activity</strong><ul>{body}</ul></div>'
+
+
 def _status_page(
-    settings: Settings, control: ControlState, state: BotState, csrf: str, now: dt.datetime, flash: str | None
+    settings: Settings,
+    control: ControlState,
+    state: BotState,
+    csrf: str,
+    now: dt.datetime,
+    flash: str | None,
+    status_data: dict | None = None,
 ) -> str:
+    status_data = status_data or {}
     token = f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
     parts = ["<h1>Elisa bot</h1>"]
     if flash in FLASH:
@@ -144,6 +262,29 @@ def _status_page(
         f'<p class="muted">{mode}</p>{last}{stale}{button}</form>'
     )
 
+    parts.append(_right_now(settings, control, state, status_data, now))
+    parts.append(_recent_activity(settings, state))
+
+    accepted = sorted((Slot.parse(key) for key in state.applied), reverse=True)[:10]
+    items = "".join(f"<li>{slot.label()}</li>" for slot in accepted) or "<li>None yet.</li>"
+    parts.append(f'<div class="card"><strong>Accepted recently</strong><ul>{items}</ul></div>')
+
+    days = [dt.date.fromisoformat(day) for day in control.days_off]
+    rows = "".join(
+        f'<li><span>{day:%a %b} {day.day}, {day.year}</span><form method="post" action="/days-off">{token}'
+        f'<input type="hidden" name="remove" value="{day.isoformat()}">'
+        '<button class="secondary small" type="submit">Remove</button></form></li>'
+        for day in days
+    ) or "<li>None.</li>"
+    parts.append(
+        '<div class="card"><strong>Days off</strong>'
+        "<p class=\"muted\">The bot doesn't accept jobs on these days.</p>"
+        f'<ul class="plain">{rows}</ul>'
+        f'<form class="row" method="post" action="/days-off">{token}'
+        f'<input type="date" name="add" min="{now.date().isoformat()}" required aria-label="Day off">'
+        '<button class="secondary" type="submit">Add</button></form></div>'
+    )
+
     choices = sorted({c for c in INTERVAL_CHOICES if settings.min_poll_seconds <= c <= settings.max_poll_seconds}
                      | {control.poll_seconds})
     options = "".join(
@@ -155,10 +296,6 @@ def _status_page(
         f'<select id="interval" name="poll_seconds">{options}</select>'
         '<button class="secondary" type="submit">Save</button></form>'
     )
-
-    accepted = sorted((Slot.parse(key) for key in state.applied), reverse=True)[:10]
-    items = "".join(f"<li>{slot.label()}</li>" for slot in accepted) or "<li>None yet.</li>"
-    parts.append(f'<div class="card"><strong>Accepted recently</strong><ul>{items}</ul></div>')
 
     parts.append(
         f'<div class="card row"><form method="post" action="/test-alert">{token}'
@@ -218,6 +355,16 @@ def create_control_app(
     async def healthz():
         return PlainTextResponse("ok")
 
+    @app.get("/manifest.webmanifest")
+    async def manifest():
+        return JSONResponse(MANIFEST, media_type="application/manifest+json")
+
+    @app.get("/icon-{size}.png")
+    async def icon(size: int):
+        if size not in ICON_SIZES:
+            return PlainTextResponse("Not found", status_code=404)
+        return FileResponse(STATIC / f"icon-{size}.png", media_type="image/png")
+
     @app.get("/login")
     async def login_page():
         return _page(_login_page())
@@ -261,8 +408,8 @@ def create_control_app(
         csrf = session_csrf(request)
         if csrf is None:
             return RedirectResponse("/login", status_code=303)
-        body = _status_page(settings, controls.load(), states.load(), csrf, clock(), msg)
-        return _page(body, refresh=30)
+        body = _status_page(settings, controls.load(), states.load(), csrf, clock(), msg, _read_status(settings))
+        return _page(body, refresh=60)
 
     @app.post("/switch")
     async def switch(request: Request):
@@ -283,6 +430,24 @@ def create_control_app(
         except ValueError:
             return RedirectResponse("/", status_code=303)
         controls.update(by="web", now=clock(), poll_seconds=seconds)
+        return RedirectResponse("/?msg=saved", status_code=303)
+
+    @app.post("/days-off")
+    async def days_off(request: Request):
+        data, problem = await checked_form(request)
+        if problem is not None:
+            return problem
+
+        def day(name: str) -> dt.date | None:
+            try:
+                return dt.date.fromisoformat(data.get(name, ""))
+            except ValueError:
+                return None
+
+        add, remove = day("add"), day("remove")
+        if add is None and remove is None:
+            return RedirectResponse("/", status_code=303)
+        controls.update(by="web", now=clock(), add_day_off=add, remove_day_off=remove)
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/test-alert")

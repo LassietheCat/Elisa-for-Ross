@@ -188,3 +188,66 @@ def test_control_file_is_owner_only_json(tmp_path):
     data = json.loads(settings.control_path.read_text())
     assert data["enabled"] is True and data["poll_seconds"] == 60
     assert settings.control_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_days_off_can_be_added_and_removed(tmp_path):
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    client.post("/days-off", data={"add": "2026-10-21", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "2026-11-26", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "2026-10-01", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "soon", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().days_off == ["2026-10-21", "2026-11-26"]
+    page = client.get("/").text
+    assert "Wed Oct 21, 2026" in page and "Thu Nov 26, 2026" in page
+    client.post("/days-off", data={"remove": "2026-10-21", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().days_off == ["2026-11-26"]
+    assert client.post("/days-off", data={"add": "2026-10-22", "csrf": "wrong"}).status_code == 403
+    assert ControlStore(settings).load().days_off == ["2026-11-26"]
+
+
+def test_right_now_shows_quick_checks_sign_in_alarm_and_today(tmp_path):
+    settings, client, _ = make(tmp_path)
+    settings.status_path.write_text(json.dumps({
+        "updated_at": "2026-10-09T09:59:30-04:00",
+        "signed_in_at": "2026-10-09T08:00:00-04:00",
+        "quick": {"every": 20, "answered_at": "2026-10-09T09:59:40-04:00", "paused": False, "open_count": 0},
+        "heartbeat": {"configured": True, "ok_at": "2026-10-09T09:59:00-04:00", "failing": False},
+    }))
+    state = BotState(baseline_done=True, daily={"2026-10-09": {"reads": 600, "failed": 2}})
+    state.add_activity("2026-10-09T09:10:00-04:00", "2026-10-14 AM", "applied", 6.2)
+    state.add_activity("2026-10-09T09:20:00-04:00", None, "gone", 3.0)
+    StateStore(settings.state_path).save(state)
+    ControlStore(settings).update(by="test", now=NOW, enabled=True)
+    sign_in(client)
+    page = client.get("/").text
+    assert "Quick checks: every 20 seconds, last answer Fri Oct 9, 9:59:40 AM. Elisa lists 0 open orders." in page
+    assert "Signed in to Elisa since Fri Oct 9, 8:00:00 AM." in page
+    assert "Outside alarm: on, last signal Fri Oct 9, 9:59:00 AM." in page
+    assert "Today: 600 calendar reads, 2 failed; 1 accepted, 1 missed." in page
+    assert "Wed Oct 14 AM: accepted, 6.2 s after the bot noticed it" in page
+    assert "a new opening was gone before the bot could read it, 3.0 s after the bot noticed it" in page
+
+
+def test_right_now_warns_when_the_bot_stops_reporting(tmp_path):
+    settings, client, _ = make(tmp_path)
+    settings.status_path.write_text(json.dumps({"updated_at": "2026-10-09T09:50:00-04:00"}))
+    ControlStore(settings).update(by="test", now=NOW, enabled=True)
+    sign_in(client)
+    page = client.get("/").text
+    assert "The bot hasn't reported for 10 min." in page and "Outside alarm: not set up." in page
+    assert "No openings yet." in page
+
+
+def test_the_page_can_be_saved_to_a_home_screen(tmp_path):
+    _, client, _ = make(tmp_path)
+    manifest = client.get("/manifest.webmanifest")
+    assert manifest.status_code == 200 and manifest.headers["content-type"].startswith("application/manifest+json")
+    assert [icon["sizes"] for icon in manifest.json()["icons"]] == ["192x192", "512x512"]
+    for size in (180, 192, 512):
+        response = client.get(f"/icon-{size}.png")
+        assert response.status_code == 200 and response.content[:8] == b"\x89PNG\r\n\x1a\n"
+    assert client.get("/icon-64.png").status_code == 404
+    page = client.get("/login").text
+    assert '<link rel="apple-touch-icon" href="/icon-180.png">' in page
+    assert "img-src 'self'; manifest-src 'self'" in client.get("/login").headers["content-security-policy"]

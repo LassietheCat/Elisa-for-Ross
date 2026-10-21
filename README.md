@@ -125,8 +125,20 @@ shows:
 - how often it checks: the quick check, and the calendar interval (15 s and up), which the page can change;
 - the last check and whether it worked, with a warning if the bot has stopped
   checking;
+- **Right now:** the quick checks (last answer, and Elisa's count of open orders, or
+  "paused"), since when the bot is signed in to Elisa, the outside alarm, and today's
+  numbers (calendar reads, failures, accepted, missed). The bot writes this to
+  `data/status.json` about every 15 s; the page warns when it stops being updated;
+- **Recent activity:** the last 10 openings the bot handled (date and AM/PM, outcome,
+  seconds after it noticed them), including openings that were gone before it could
+  read them;
 - the slots accepted recently (date and AM/PM only);
+- **Days off:** dates when the bot doesn't accept jobs (a date picker; past days drop
+  off by themselves). Openings on those days are only reported, as "day off";
 - a **Send test alert** button.
+
+The page refreshes itself every minute, and can be saved to a phone's home screen: it
+has an app icon and a web app manifest, so it opens like an app.
 
 Test mode vs live is deliberately **not** on the page; it stays a server setting.
 

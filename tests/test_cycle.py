@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time
 
@@ -11,7 +12,7 @@ from elisa_bot.notify import Message
 from elisa_bot.site.errors import DataRequestFailed, InvalidCredentials, SiteBusy, SiteError
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SiteSession
-from elisa_bot.state import StateStore
+from elisa_bot.state import ControlStore, StateStore
 from tests.conftest import fixed_now, make_settings, wo
 from tests.mock_site.server import MOCK_EMAIL, MOCK_PASSWORD
 
@@ -368,3 +369,18 @@ async def test_an_opening_gone_before_the_read_is_recorded_as_gone(mock, setting
         assert (entry["slot"], entry["outcome"]) == (None, "gone")
     finally:
         await session.close()
+
+
+async def test_an_opening_on_a_day_off_is_not_accepted(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    ControlStore(settings).update(by="test", now=fixed_now(), add_day_off=dt.date(2026, 10, 14))
+    mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-15", "PM", "available")])
+    report = await run(settings, capture)
+    assert [str(r.slot) for r in report.results] == ["2026-10-15 PM"] and report.skipped_day_off == [S("2026-10-14 AM")]
+    assert len(mock.stats()["accept_calls"]) == 1
+    assert capture.messages[-1].text == "Applied: Thu Oct 15 PM. Not accepted, marked as a day off: Wed Oct 14 AM."
+    state = StateStore(settings.state_path).load()
+    assert [(a["slot"], a["outcome"]) for a in state.activity] == [("2026-10-14 AM", "day off"), ("2026-10-15 PM", "applied")]
+    assert state.daily[fixed_now().date().isoformat()]["reads"] == 2

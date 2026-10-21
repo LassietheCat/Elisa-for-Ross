@@ -16,8 +16,8 @@ from .notify import Notifier, build_notifier, paused_message, recovered_message,
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
-from .state import ControlStore
-from .timeutil import now_in
+from .state import ControlStore, write_json
+from .timeutil import now_in, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +29,7 @@ QUICK_SILENCE_S = 300
 QUICK_MAX_S = 120
 QUICK_RECOVER_S = 1800
 HEARTBEAT_STALE_S = 300
+STATUS_EVERY_S = 15
 
 
 def next_delay(failures: int, poll_seconds: int, *, busy: bool = False, retry_after: int | None = None) -> int:
@@ -68,6 +69,7 @@ class QuickCheck:
         self.every = settings.quick_check_seconds
         self.refused_at: float | None = None
         self.answered_at: float | None = None
+        self.answered_wall: str | None = None
         self.hot_months: list[tuple[int, int]] | None = None
         self.detected_at: float | None = None
 
@@ -108,6 +110,7 @@ class QuickCheck:
             return False
         self.misses = 0
         self.answered_at = self.timer()
+        self.answered_wall = to_iso(self.clock())
         previous, self.known = self.known, count
         if previous is None:
             log.info("Quick checks running: Elisa lists %d open work order(s) in the months checked", count)
@@ -141,12 +144,20 @@ class QuickCheck:
 
 
 class Heartbeat:
-    def __init__(self, url: str | None, every_s: float, timer: Callable[[], float] = time.monotonic) -> None:
+    def __init__(
+        self,
+        url: str | None,
+        every_s: float,
+        timer: Callable[[], float] = time.monotonic,
+        clock: Callable[[], dt.datetime] | None = None,
+    ) -> None:
         self.url = url
         self.every_s = every_s
         self.timer = timer
+        self.clock = clock
         self.healthy_at: float | None = None
         self.sent_at: float | None = None
+        self.ok_wall: str | None = None
         self.failing = False
 
     def healthy(self) -> None:
@@ -165,6 +176,40 @@ class Heartbeat:
         if not ok and not self.failing:
             log.warning("Heartbeat to the outside monitor failed")
         self.failing = not ok
+        if ok and self.clock is not None:
+            self.ok_wall = to_iso(self.clock())
+
+
+class StatusFile:
+    def __init__(self, settings: Settings, clock: Callable[[], dt.datetime], timer: Callable[[], float] = time.monotonic):
+        self.path = settings.status_path
+        self.clock = clock
+        self.timer = timer
+        self.written_at: float | None = None
+        self.running_since = to_iso(clock())
+        self.signed_in_at: str | None = None
+
+    def write(self, quick: QuickCheck, heartbeat: Heartbeat, *, force: bool = False) -> None:
+        now = self.timer()
+        if not force and self.written_at is not None and now - self.written_at < STATUS_EVERY_S:
+            return
+        self.written_at = now
+        data = {
+            "updated_at": to_iso(self.clock()),
+            "running_since": self.running_since,
+            "signed_in_at": self.signed_in_at,
+            "quick": {
+                "every": quick.every,
+                "answered_at": quick.answered_wall,
+                "paused": quick.paused,
+                "open_count": quick.known,
+            },
+            "heartbeat": {"configured": heartbeat.url is not None, "ok_at": heartbeat.ok_wall, "failing": heartbeat.failing},
+        }
+        try:
+            write_json(self.path, data)
+        except OSError as exc:
+            log.debug("Could not write the status file (%s)", type(exc).__name__)
 
 
 def _ping(url: str) -> bool:
@@ -214,7 +259,8 @@ async def run_forever(
     alerts = FailureAlerts(notifier)
     rotation = MonthRotation()
     quick = QuickCheck(settings, clock)
-    heartbeat = Heartbeat(settings.heartbeat_url, settings.heartbeat_seconds)
+    heartbeat = Heartbeat(settings.heartbeat_url, settings.heartbeat_seconds, clock=clock)
+    status = StatusFile(settings, clock)
     read_all = False
     loop = asyncio.get_running_loop()
     session: SiteSession | None = None
@@ -229,9 +275,11 @@ async def run_forever(
                     switched_on = False
                 if session is not None:
                     session = await _shut(session, logout=settings.logout_when_off)
+                    status.signed_in_at = None
                 alerts.reset()
                 heartbeat.healthy()
                 await heartbeat.beat()
+                status.write(quick, heartbeat)
                 await _sleep(stop, 1.0)
                 continue
             if switched_on is not True:
@@ -266,6 +314,9 @@ async def run_forever(
                 quick.calendar_read()
                 heartbeat.healthy()
                 if report.signed_in:
+                    status.signed_in_at = to_iso(clock())
+                status.write(quick, heartbeat)
+                if report.signed_in:
                     at_least = settings.quiet_after_sign_in_seconds
                     started = loop.time()
                 await alerts.succeeded()
@@ -298,6 +349,8 @@ async def run_forever(
                 await alerts.failed("unexpected_error")
                 log.exception("Unexpected error, %d in a row; restarting the browser", alerts.failures)
                 session = await _shut(session, logout=False)
+            if session is None:
+                status.signed_in_at = None
             can_quick = session is not None and settings.quick_check_seconds > 0 and not busy and not at_least
             read_all = await _wait_for_next(
                 stop,
@@ -309,7 +362,7 @@ async def run_forever(
                 at_least=at_least,
                 quick=(lambda: quick.check(session)) if can_quick else None,
                 quick_every=quick.every,
-                tick=lambda: _tick(heartbeat, quick),
+                tick=lambda: _tick(heartbeat, quick, status),
             )
     finally:
         if session is not None:
@@ -317,10 +370,11 @@ async def run_forever(
         log.info("Bot stopped")
 
 
-async def _tick(heartbeat: Heartbeat, quick: QuickCheck) -> None:
+async def _tick(heartbeat: Heartbeat, quick: QuickCheck, status: StatusFile) -> None:
     if quick.answered_at is not None and (heartbeat.healthy_at is None or quick.answered_at > heartbeat.healthy_at):
         heartbeat.healthy_at = quick.answered_at
     await heartbeat.beat()
+    status.write(quick, heartbeat)
 
 
 async def _shut(session: SiteSession, *, logout: bool) -> None:

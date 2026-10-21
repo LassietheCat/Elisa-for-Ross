@@ -91,3 +91,14 @@ def test_three_months_are_checked_and_read_from_the_month_on_screen():
     assert reading_order(months, (2027, 1)) == [(2027, 1), (2026, 12), (2026, 11)]
     assert reading_order(months, (2026, 12)) == [(2026, 12), (2027, 1), (2026, 11)]
     assert reading_order(months, (2026, 10)) == months
+
+
+def test_a_day_off_is_never_accepted():
+    plan = plan_month(
+        {S("2026-10-14 AM"): open_(), S("2026-10-15 PM"): open_()},
+        BotState(baseline_done=True),
+        today=TODAY,
+        settings=Settings(),
+        days_off={dt.date(2026, 10, 14)},
+    )
+    assert plan.to_apply == [S("2026-10-15 PM")] and plan.skipped_day_off == [S("2026-10-14 AM")]

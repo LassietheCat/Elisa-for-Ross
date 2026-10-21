@@ -16,6 +16,7 @@ class Plan:
     new: set[Slot] = field(default_factory=set)
     to_apply: list[Slot] = field(default_factory=list)
     skipped_booked: list[Slot] = field(default_factory=list)
+    skipped_day_off: list[Slot] = field(default_factory=list)
     baseline_only: bool = False
 
 
@@ -27,6 +28,7 @@ def plan_month(
     settings: Settings,
     already_planned: int = 0,
     baseline: bool | None = None,
+    days_off: set[dt.date] | frozenset[dt.date] = frozenset(),
 ) -> Plan:
     available = {slot for slot, tags in slots.items() if tags.available > 0}
     plan = Plan(
@@ -50,6 +52,9 @@ def plan_month(
             continue
         if slot in plan.booked:
             plan.skipped_booked.append(slot)
+            continue
+        if slot.date in days_off:
+            plan.skipped_day_off.append(slot)
             continue
         if budget is not None and len(plan.to_apply) >= budget:
             break

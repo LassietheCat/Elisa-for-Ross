@@ -15,7 +15,7 @@ from .site.calendar import CalendarReader
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
-from .state import BotState, StateStore
+from .state import BotState, ControlStore, StateStore
 from .timeutil import add_months, now_in, to_iso
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ class CycleReport:
     baseline_only: bool = False
     results: list[ApplyResult] = field(default_factory=list)
     skipped_booked: list[Slot] = field(default_factory=list)
+    skipped_day_off: list[Slot] = field(default_factory=list)
     notified: bool = False
     months_read: list[tuple[int, int]] = field(default_factory=list)
     signed_in: bool = False
@@ -101,6 +102,7 @@ async def run_once(
         for key in map(month_key, window)
         if key not in state.baseline_pending and (state.watched_through is None or key > state.watched_through)
     ]
+    days_off = ControlStore(settings).load().days_off_dates()
     report = CycleReport()
     baselines: list[bool] = []
     missed: list[str] = []
@@ -139,6 +141,7 @@ async def run_once(
                 settings=settings,
                 already_planned=len(report.results),
                 baseline=month_key((year, month_number)) in state.baseline_pending,
+                days_off=days_off,
             )
             report.months_read.append((year, month_number))
             report.open_count += sum(tags.available for tags in reading.slots.values())
@@ -146,8 +149,11 @@ async def run_once(
             report.available |= plan.available
             report.new |= plan.new
             report.skipped_booked += plan.skipped_booked
+            report.skipped_day_off += plan.skipped_day_off
             for slot in plan.skipped_booked:
                 state.add_activity(to_iso(clock()), str(slot), "skipped", _since(detected_at))
+            for slot in plan.skipped_day_off:
+                state.add_activity(to_iso(clock()), str(slot), "day off", _since(detected_at))
             for slot in plan.to_apply:
                 result = await applier.apply_one(slot)
                 seconds = _since(detected_at)
@@ -171,6 +177,7 @@ async def run_once(
         state.last_run_at = to_iso(clock())
         state.last_run_ok = False
         state.last_error = error.code if error is not None else "unexpected_error"
+        state.count(today, "failed")
         store.save(state)
         clicked = [result for result in report.results if result.clicked]
         if clicked:
@@ -207,10 +214,11 @@ async def run_once(
     state.last_run_at = to_iso(clock())
     state.last_run_ok = True
     state.last_error = None
+    state.count(today, "reads")
     state.prune(today)
     store.save(state)
 
-    report.notified = await _notify(notifier, settings, report.results, report.skipped_booked)
+    report.notified = await _notify(notifier, settings, report.results, report.skipped_booked, report.skipped_day_off)
     return report
 
 
@@ -240,11 +248,18 @@ async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -
     return problems
 
 
-async def _notify(notifier: Notifier, settings: Settings, results: list[ApplyResult], skipped: list[Slot]) -> bool:
+async def _notify(
+    notifier: Notifier,
+    settings: Settings,
+    results: list[ApplyResult],
+    skipped: list[Slot],
+    days_off: list[Slot] = (),
+) -> bool:
     message = cycle_message(
         results,
         skipped=skipped if settings.notify_skipped else (),
         include_missed=settings.notify_missed,
+        days_off=days_off if settings.notify_skipped else (),
     )
     if message is None:
         return False

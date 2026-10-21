@@ -17,6 +17,7 @@ log = logging.getLogger(__name__)
 
 STATE_VERSION = 1
 ACTIVITY_KEPT = 50
+MAX_DAYS_OFF = 366
 
 
 @dataclass
@@ -33,6 +34,11 @@ class BotState:
     last_run_ok: bool | None = None
     last_error: str | None = None
     activity: list[dict] = field(default_factory=list)
+    daily: dict[str, dict[str, int]] = field(default_factory=dict)
+
+    def count(self, day: dt.date, key: str) -> None:
+        entry = self.daily.setdefault(day.isoformat(), {})
+        entry[key] = entry.get(key, 0) + 1
 
     def add_activity(self, at: str, slot: str | None, outcome: str, seconds: float | None) -> None:
         self.activity = [*self.activity, {"at": at, "slot": slot, "outcome": outcome, "seconds": seconds}][-ACTIVITY_KEPT:]
@@ -58,6 +64,7 @@ class BotState:
         self.applies_by_day = {
             k: v for k, v in self.applies_by_day.items() if dt.date.fromisoformat(k) >= cutoff
         }
+        self.daily = {k: v for k, v in self.daily.items() if dt.date.fromisoformat(k) >= cutoff}
 
 
 class StateStore:
@@ -91,6 +98,21 @@ class ControlState:
     poll_seconds: int = 60
     updated_at: str | None = None
     updated_by: str | None = None
+    days_off: list[str] = field(default_factory=list)
+
+    def days_off_dates(self) -> set[dt.date]:
+        return {dt.date.fromisoformat(day) for day in self.days_off}
+
+
+def _valid_days(value: object) -> list[str]:
+    days = set()
+    if isinstance(value, list):
+        for item in value:
+            try:
+                days.add(dt.date.fromisoformat(str(item)).isoformat())
+            except ValueError:
+                continue
+    return sorted(days)[:MAX_DAYS_OFF]
 
 
 class ControlStore:
@@ -115,16 +137,30 @@ class ControlStore:
             poll_seconds=poll,
             updated_at=updated_at if isinstance(updated_at, str) else None,
             updated_by=updated_by if isinstance(updated_by, str) else None,
+            days_off=_valid_days(data.get("days_off")),
         )
 
     def update(
-        self, *, by: str, now: dt.datetime, enabled: bool | None = None, poll_seconds: int | None = None
+        self,
+        *,
+        by: str,
+        now: dt.datetime,
+        enabled: bool | None = None,
+        poll_seconds: int | None = None,
+        add_day_off: dt.date | None = None,
+        remove_day_off: dt.date | None = None,
     ) -> ControlState:
         control = self.load()
         if enabled is not None:
             control.enabled = bool(enabled)
         if poll_seconds is not None:
             control.poll_seconds = self.settings.clamp_poll(poll_seconds)
+        days = set(control.days_off)
+        if add_day_off is not None:
+            days.add(add_day_off.isoformat())
+        if remove_day_off is not None:
+            days.discard(remove_day_off.isoformat())
+        control.days_off = sorted(day for day in days if day >= now.date().isoformat())[:MAX_DAYS_OFF]
         control.updated_at = to_iso(now)
         control.updated_by = by
         write_json(self.path, asdict(control))
