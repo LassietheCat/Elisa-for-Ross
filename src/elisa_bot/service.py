@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import time
 import urllib.request
+from collections import deque
 from typing import Awaitable, Callable
 
 from playwright.async_api import Error as PlaywrightError
@@ -77,6 +78,7 @@ class QuickCheck:
         self.jobs_day: dt.date | None = None
         self.open_seen: dt.datetime | None = None
         self.answering_since: dt.datetime | None = None
+        self.answers: deque[tuple[dt.datetime, int]] = deque(maxlen=3)
 
     def reset(self) -> None:
         self.known = None
@@ -122,6 +124,7 @@ class QuickCheck:
         if count > 0:
             self.open_seen = now
         self._note_jobs(counts, today, now)
+        self.answers.append((now, count))
         previous, self.known = self.known, count
         if previous is None:
             log.info(
@@ -156,13 +159,22 @@ class QuickCheck:
             listed = f"open work orders last listed at {short_time(self.open_seen, now.date())}"
         else:
             listed = f"no open work order listed since {short_time(self.answering_since or now, now.date())}"
+        before = ", ".join(f"{short_time(at, now.date())} ({open_count} open)" for at, open_count in self.answers) or "none"
         log.info(
-            "Booked jobs in Elisa's count went from %d to %d (%s); %s",
+            "Booked jobs in Elisa's count went from %d to %d (%s); %s; quick checks before it: %s",
             sum(previous.values()),
             sum(jobs.values()),
             changes,
             listed,
+            before,
         )
+
+    def live(self, session: SiteSession) -> bool:
+        ready, months = session.live.take_trigger()
+        if not ready:
+            return False
+        self.hot_months, self.detected_at = months, None
+        return True
 
     async def _months_with_openings(
         self, session: SiteSession, months: list[tuple[int, int]], today: dt.date
@@ -350,6 +362,7 @@ async def run_forever(
                     detected_at=detected_at,
                 )
                 quick.calendar_read()
+                session.live.saw_open(report.available)
                 heartbeat.healthy()
                 if report.signed_in:
                     status.signed_in_at = to_iso(clock())
@@ -389,7 +402,8 @@ async def run_forever(
                 session = await _shut(session, logout=False)
             if session is None:
                 status.signed_in_at = None
-            can_quick = session is not None and settings.quick_check_seconds > 0 and not busy and not at_least
+            can_live = session is not None and not busy and not at_least
+            can_quick = can_live and settings.quick_check_seconds > 0
             read_all = await _wait_for_next(
                 stop,
                 controls,
@@ -401,6 +415,7 @@ async def run_forever(
                 quick=(lambda: quick.check(session)) if can_quick else None,
                 quick_every=quick.every,
                 tick=lambda: _tick(heartbeat, quick, status),
+                live=(lambda: quick.live(session)) if can_live else None,
             )
     finally:
         if session is not None:
@@ -444,6 +459,7 @@ async def _wait_for_next(
     quick: Callable[[], Awaitable[bool]] | None = None,
     quick_every: float = 0,
     tick: Callable[[], Awaitable[None]] | None = None,
+    live: Callable[[], bool] | None = None,
 ) -> bool:
     loop = asyncio.get_running_loop()
     next_quick = loop.time() + quick_every
@@ -453,6 +469,8 @@ async def _wait_for_next(
         control = controls.load()
         if not control.enabled:
             return False
+        if live is not None and live():
+            return True
         delay = max(at_least, next_delay(failures, control.poll_seconds, busy=busy, retry_after=retry_after))
         remaining = started + delay - loop.time()
         if remaining <= 0:

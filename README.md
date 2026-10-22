@@ -68,6 +68,17 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     `MIN_POLL_SECONDS`, 15):** it reads one month, moving one month at a time
     (Oct → Nov → Dec → Nov → Oct …). This keeps the page and the sign-in fresh, gives
     the quick check its request to replay, and catches anything the count misses.
+    The page keeps each month's open work orders once it has loaded them, and moving
+    between months reuses that list; only the **Available** button loads it again. The
+    bot watches the page's own list requests and clicks Available whenever the month
+    it is about to read wasn't loaded during this check, so every read is fresh, with
+    one list load per read.
+  - **Live channel:** the page keeps a websocket open to Elisa and joins a room for
+    each of the owner's languages. The bot listens to what arrives on its own page; it
+    adds no requests. Each event is logged by name, date and AM/PM only. An order
+    being assigned to someone (`coi_assigned`) is only logged, saying whether the bot
+    had seen it open. Any other event makes the bot read that month at once (at most
+    one such read every 10 s, and no more than 30 per event name an hour).
   - Elisa limits how many requests an account can make, and its count request more
     strictly: quick checks every 10 s drew refusals within minutes, every 20 s none.
     When a quick check is refused, quick checks pause until the next calendar read and
@@ -90,7 +101,8 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
 - **Job watch:** the bot logs every change to the owner's jobs, by date and AM/PM only,
   to show when and how new jobs arrive. Each quick-check answer already includes Elisa's
   count of the owner's Applied, Assigned and Confirmed jobs from today on; when that
-  total changes, the bot logs it with the last time Elisa listed an open work order.
+  total changes, the bot logs it with the last time Elisa listed an open work order
+  and the times of the three quick checks before it.
   Each calendar read compares the month with its previous read and logs lines such as
   "New job on the calendar: Thu Oct 29 PM, now 1 Assigned (was none at 14:28:41)", or
   "Job gone" / "Job changed". The previous read of each month is kept in

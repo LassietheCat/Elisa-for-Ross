@@ -47,6 +47,8 @@ class Selectors:
     status_words: dict[str, str] = field(default_factory=lambda: dict(_STATUS_WORDS))
     schedule_api: str = "/interpreter-scheduled"
     counts_api: str = "/get-open-work-order-count1"
+    open_list_api: str = "/get-open-work-order"
+    live_path: str = "/socket.io/"
 
     dialog: str = ".modal.show, .modal.in, [role=dialog]"
     dialog_buttons: str = "button, a.btn, input[type=button], input[type=submit]"

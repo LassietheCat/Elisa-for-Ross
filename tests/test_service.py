@@ -8,6 +8,7 @@ import logging
 import stat
 from email.utils import format_datetime
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 import pytest
 from playwright.async_api import Error as PlaywrightError
@@ -17,6 +18,7 @@ from elisa_bot.cycle import CycleReport
 from elisa_bot.notify import Message
 from elisa_bot.service import FailureAlerts, MonthRotation, QuickCheck, next_delay, run_forever
 from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignInPaused, SiteBusy
+from elisa_bot.site.live import LiveChannel
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
 from elisa_bot.state import BotState, ControlStore, StateStore
@@ -129,6 +131,7 @@ async def test_no_working_again_email_without_a_failure_alert():
 class BrokenBrowserSession:
     def __init__(self, *args, **kwargs) -> None:
         self.started = False
+        self.live = LiveChannel(ZoneInfo("America/New_York"))
 
     async def start(self) -> None:
         raise PlaywrightError("Executable doesn't exist")
@@ -356,11 +359,11 @@ async def test_always_on_bot_loads_one_month_per_check(mock, tmp_path):
     ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
     stop, task = start(settings, Capture())
     try:
-        await until(lambda: len(mock.stats()["calendar_months"]) >= 7)
+        await until(lambda: len(mock.stats()["open_list_loads"]) >= 7)
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
-    assert mock.stats()["calendar_months"][:7] == [
+    assert mock.stats()["open_list_loads"][:7] == [
         "2026-10", "2026-11", "2026-12", "2026-11", "2026-10", "2026-11", "2026-12",
     ]
     assert mock.stats()["logins_ok"] == 1
@@ -520,10 +523,39 @@ async def test_quick_checks_log_changes_in_elisas_count_of_booked_jobs(tmp_path,
         results.append(await quick.check(session))
     assert results == [False, False, False, True, False, False, False]
     assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Booked jobs")] == [
-        "Booked jobs in Elisa's count went from 11 to 12 (Applied 0->1); no open work order listed since 10:00:00",
-        "Booked jobs in Elisa's count went from 12 to 13 (Assigned 9->10); open work orders last listed at 10:01:00",
-        "Booked jobs in Elisa's count went from 9 to 8 (Assigned 8->7); open work orders last listed at Oct 7 10:01:00",
+        "Booked jobs in Elisa's count went from 11 to 12 (Applied 0->1); no open work order listed since 10:00:00; "
+        "quick checks before it: 10:00:00 (0 open), 10:00:20 (0 open)",
+        "Booked jobs in Elisa's count went from 12 to 13 (Assigned 9->10); open work orders last listed at 10:01:00; "
+        "quick checks before it: 10:00:20 (0 open), 10:00:40 (0 open), 10:01:00 (1 open)",
+        "Booked jobs in Elisa's count went from 9 to 8 (Assigned 8->7); open work orders last listed at Oct 7 10:01:00; "
+        "quick checks before it: Oct 7 10:01:00 (1 open), Oct 7 10:01:20 (0 open), 10:00:00 (0 open)",
     ]
+
+
+@pytest.mark.browser
+async def test_a_live_event_makes_the_bot_read_that_month_at_once(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = dataclasses.replace(fast(make_settings(tmp_path, mock.base_url)), poll_seconds=120)
+    StateStore(settings.state_path).save(BotState(baseline_done=True, watched_through="2026-12"))
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    capture = Capture()
+    loop = asyncio.get_running_loop()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: mock.stats()["live_rooms"] >= 1 and len(mock.stats()["open_list_loads"]) >= 1)
+        await asyncio.sleep(1)
+        mock.set_work_orders([wo("2026-11-03", "PM", "available")])
+        event = {"deldate": "2026-11-03T00:00:00.000Z", "sched": "14:00", "courtTimezone": "America/New_York"}
+        assert mock.push_event("coi_created", event) >= 1
+        pushed = loop.time()
+        await until(lambda: len(capture.messages) == 1, timeout=30)
+        assert loop.time() - pushed < 15
+        assert capture.messages[0].subject == "Elisa: test mode, opening Tue Nov 3 PM"
+        assert "Live channel: 'coi_created' event for Tue Nov 3 PM; reading that month now" in caplog.text
+        assert "Live channel: the page joined a work-order room (1 so far)" in caplog.text
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
 
 
 async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not(monkeypatch):

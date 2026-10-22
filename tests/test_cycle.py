@@ -326,13 +326,27 @@ async def test_single_month_checks_load_once_and_keep_the_other_months_memory(mo
 
         report = await run(settings, capture, session, month=(2026, 11))
         assert report.results == [] and capture.messages == []
-        assert mock.stats()["calendar_months"] == ["2026-10", "2026-10", "2026-11", "2026-12", "2026-11"]
+        assert mock.stats()["open_list_loads"] == ["2026-10", "2026-10", "2026-11", "2026-12", "2026-11"]
 
         mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-11-03", "PM", "available"),
                               wo("2026-11-24", "AM", "available")])
         report = await run(settings, capture, session, month=(2026, 11))
         assert [str(r.slot) for r in report.results] == ["2026-11-24 AM"]
         assert store.load().seen == ["2026-10-14 AM", "2026-11-03 PM", "2026-11-24 AM"]
+    finally:
+        await session.close()
+
+
+async def test_a_month_the_page_already_loaded_is_reloaded_before_it_is_read(mock, settings):
+    session = await signed_in(settings)
+    try:
+        await run(settings, Capture(), session, month=(2026, 10))
+        await run(settings, Capture(), session, month=(2026, 11))
+        loads = len(mock.stats()["open_list_loads"])
+        mock.set_work_orders([wo("2026-10-21", "PM", "available")])
+        report = await run(settings, Capture(), session, month=(2026, 10))
+        assert report.available == {S("2026-10-21 PM")}
+        assert mock.stats()["open_list_loads"][loads:] == ["2026-10"]
     finally:
         await session.close()
 

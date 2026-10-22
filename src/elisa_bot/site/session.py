@@ -12,8 +12,9 @@ from collections import deque
 from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
-from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Request, Response, async_playwright
+from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Request, Response, WebSocket, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from ..config import Settings
@@ -27,6 +28,7 @@ from .errors import (
     SiteError,
     VerificationRequired,
 )
+from .live import LiveChannel
 from .selectors import Selectors
 
 log = logging.getLogger(__name__)
@@ -90,6 +92,9 @@ class SiteSession:
         self._warned: set[tuple] = set()
         self._count_request: tuple[str, dict] | None = None
         self._api_headers: dict[str, str] | None = None
+        self._list_seq = 0
+        self._list_loads: deque[tuple[int, str]] = deque(maxlen=50)
+        self.live = LiveChannel(ZoneInfo(settings.timezone))
 
     @property
     def started(self) -> bool:
@@ -113,11 +118,41 @@ class SiteSession:
         self._page.set_default_timeout(20_000)
         self._page.on("request", self._on_request)
         self._page.on("response", self._on_response)
+        self._page.on("websocket", self._on_websocket)
+
+    def _on_websocket(self, socket: WebSocket) -> None:
+        if self.sel.live_path not in urlsplit(socket.url).path:
+            return
+        self.live.connected(socket.url)
+        socket.on("framereceived", self.live.received)
+        socket.on("framesent", self.live.sent)
+        socket.on("close", self.live.closed)
+
+    def list_mark(self) -> int:
+        return self._list_seq
+
+    def list_loaded_since(self, mark: int, month: tuple[int, int]) -> bool:
+        key = f"{month[0]:04d}-{month[1]:02d}"
+        return any(seq > mark and loaded == key for seq, loaded in self._list_loads)
+
+    def _note_list_load(self, request: Request) -> None:
+        try:
+            body = request.post_data_json
+        except (PlaywrightError, ValueError):
+            return
+        dates = _date_range(body) if isinstance(body, dict) else None
+        start = dates.get("startDate") if dates else None
+        if isinstance(start, str) and len(start) >= 7:
+            self._list_seq += 1
+            self._list_loads.append((self._list_seq, start[:7]))
 
     def _on_request(self, request: Request) -> None:
         if request.method != "POST" or request.resource_type not in _WATCHED_TYPES:
             return
         path = urlsplit(request.url).path
+        if path.endswith(self.sel.open_list_api):
+            self._note_list_load(request)
+            return
         if not (path.endswith(self.sel.counts_api) or path.endswith(self.sel.schedule_api)):
             return
         if path.endswith(self.sel.counts_api):

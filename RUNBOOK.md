@@ -154,6 +154,10 @@ when the count goes up or Elisa refuses one.
   lines come from the quick checks (within 20 s) and say when Elisa last listed an open
   work order; "on the calendar" lines come from the calendar reads (within about
   3 minutes) and name the half-day.
+- **Live channel:** `journalctl -u elisa-bot | grep "Live channel"` shows the websocket
+  connecting after each sign-in, the page joining its work-order rooms, each order
+  assigned to someone (and whether the bot had seen it open), and any other event,
+  which makes the bot read that month at once.
 - **After changing settings or secrets:** `sudo systemctl restart elisa-bot elisa-control`.
 - **Stopping:** `sudo systemctl stop elisa-bot` signs out of Elisa first (`KillMode=mixed`
   lets the bot close its own browser).

@@ -5,7 +5,7 @@ import json
 import secrets
 import threading
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .pages import DASHBOARD_HTML, LOGIN_HTML
@@ -47,6 +47,7 @@ DEFAULT_CONFIG = {
 class MockState:
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.live_clients: list[tuple[WebSocket, asyncio.AbstractEventLoop]] = []
         self.reset()
 
     def reset(self) -> None:
@@ -64,6 +65,8 @@ class MockState:
                 "details_opened": 0,
                 "accept_calls": [],
                 "rate_limited": 0,
+                "open_list_loads": [],
+                "live_rooms": 0,
             }
 
     def set_work_orders(self, items: list[dict]) -> None:
@@ -158,6 +161,35 @@ def create_app(state: MockState) -> FastAPI:
             if state.config["schedule_drift"]:
                 result.setdefault(start[:8] + "20", {})["Assigned"] = {"am": 1, "pm": 0}
         return {"status": True, "result": result}
+
+    @app.post("/api/open-work-orders/{client}/get-open-work-order")
+    async def open_work_order_list(request: Request, client: str):
+        if not signed_in(request):
+            return unauthorized()
+        start, end = in_range(await request.json(), "filterBy")
+        with state.lock:
+            state.stats["open_list_loads"].append(start[:7])
+            data = [{"date": wo["date"], "half": wo["half"]} for wo in state.work_orders
+                    if wo["status"] == "available" and start <= wo["date"] <= end]
+        return {"status": True, "data": data}
+
+    @app.websocket("/socket.io/")
+    async def live(websocket: WebSocket):
+        await websocket.accept()
+        client = (websocket, asyncio.get_running_loop())
+        with state.lock:
+            state.live_clients.append(client)
+        try:
+            while True:
+                if (await websocket.receive_text()).startswith('42["subscribe"'):
+                    with state.lock:
+                        state.stats["live_rooms"] += 1
+        except WebSocketDisconnect:
+            pass
+        finally:
+            with state.lock:
+                if client in state.live_clients:
+                    state.live_clients.remove(client)
 
     @app.post("/api/open-work-orders/{client}/get-open-work-order-count1")
     async def open_work_order_count(request: Request, client: str):

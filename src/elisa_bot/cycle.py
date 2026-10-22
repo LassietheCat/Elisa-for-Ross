@@ -12,7 +12,7 @@ from .models import ApplyOutcome, ApplyResult, MonthReading, Slot, SlotTags
 from .notify import Notifier, build_notifier, cycle_message, missed_openings_message
 from .site.applier import Applier
 from .site.calendar import CalendarReader
-from .site.errors import InvalidCredentials, SiteError, VerificationRequired
+from .site.errors import CalendarNotRendered, InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
 from .state import BotState, ControlStore, StateStore
@@ -110,27 +110,27 @@ async def run_once(
         if not session.started:
             await session.start()
         session.clear_problems()
-        calendar_was_showing = await session.calendar_visible()
+        loaded_mark = session.list_mark()
         report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
-        if month is None and only:
-            targets = [m for m in window if m in only] or list(window)
-            displayed = await reader.displayed_month()
-            if calendar_was_showing and displayed in targets:
-                await reader.refresh()
-                session.raise_for_problems()
-            months = reading_order(targets, displayed)
-        elif month is None:
-            displayed = await reader.refresh()
-            session.raise_for_problems()
-            months = reading_order(window, displayed)
+        shown = await _shown_month(reader, session)
+        if month is None:
+            targets = [m for m in window if only and m in only] or list(window)
+            months = reading_order(targets, shown)
         else:
-            if calendar_was_showing and await reader.displayed_month() == month:
-                await reader.refresh()
             months = [month]
         for year, month_number in months:
             await reader.go_to_month(year, month_number)
+            if not session.list_loaded_since(loaded_mark, (year, month_number)):
+                reload_mark = session.list_mark()
+                await reader.refresh()
+                session.raise_for_problems()
+                if not session.list_loaded_since(reload_mark, (year, month_number)):
+                    session.warn_once(
+                        ("list load",),
+                        "Reloading the calendar did not reload its open work orders; reloading before every read",
+                    )
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
             missed += await _warn_about_missed_tags(session, reading)
@@ -221,6 +221,15 @@ async def run_once(
 
     report.notified = await _notify(notifier, settings, report.results, report.skipped_booked, report.skipped_day_off)
     return report
+
+
+async def _shown_month(reader: CalendarReader, session: SiteSession) -> tuple[int, int]:
+    try:
+        return await reader.displayed_month()
+    except CalendarNotRendered:
+        shown = await reader.refresh()
+        session.raise_for_problems()
+        return shown
 
 
 def _note_job_changes(state: BotState, reading: MonthReading, now: dt.datetime) -> None:

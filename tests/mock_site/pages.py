@@ -146,20 +146,54 @@ async function api(url, opts) {
   if (res.status === 401) { location.href = '/login'; throw new Error('signed out'); }
   return res;
 }
-async function load() {
+const openCache = {};
+function clearCache() { Object.keys(openCache).forEach(key => delete openCache[key]); }
+async function load(fresh) {
   setLoading(true);
   try {
     const pad = n => String(n).padStart(2, '0');
+    const key = `${view.year}-${pad(view.month)}`;
+    const reuse = !fresh && key in openCache;
     const last = new Date(Date.UTC(view.year, view.month, 0)).getUTCDate();
     const range = {startDate: `${view.year}-${pad(view.month)}-01`, endDate: `${view.year}-${pad(view.month)}-${pad(last)}`};
     const post = (url, payload) => api(url, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
-    const [res] = await Promise.all([
+    const calls = [
       api(`/api/mock/calendar?year=${view.year}&month=${view.month}`),
       post('/api/open-work-orders/mock-client/interpreter-scheduled', {filterBy: range}),
       post('/api/open-work-orders/mock-client/get-open-work-order-count1', {filter: range}),
-    ]);
-    render(await res.json());
+    ];
+    if (!reuse) calls.push(post('/api/open-work-orders/mock-client/get-open-work-order', {filterBy: range}));
+    const [res] = await Promise.all(calls);
+    const data = await res.json();
+    if (data.cells) { if (reuse) keepOpen(data, openCache[key]); else openCache[key] = openPart(data); }
+    render(data);
   } finally { setLoading(false); }
+}
+function openPart(data) {
+  const open = {};
+  for (const [iso, halves] of Object.entries(data.cells)) {
+    for (const [half, counts] of Object.entries(halves)) {
+      if (counts.available) { open[iso] = open[iso] || {}; open[iso][half] = counts.available; }
+    }
+  }
+  return open;
+}
+function keepOpen(data, open) {
+  for (const halves of Object.values(data.cells)) {
+    for (const counts of Object.values(halves)) delete counts.available;
+  }
+  for (const [iso, halves] of Object.entries(open)) {
+    data.cells[iso] = data.cells[iso] || {};
+    for (const [half, count] of Object.entries(halves)) {
+      data.cells[iso][half] = data.cells[iso][half] || {};
+      data.cells[iso][half].available = count;
+    }
+  }
+}
+function connectLive() {
+  const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/socket.io/?EIO=4&transport=websocket`);
+  ws.onopen = () => { ws.send('40'); ws.send('42["subscribe","OPEN_WO_MOCK"]'); ws.send('42["subscribe","PG_CONNECTION"]'); };
+  ws.onerror = () => {};
 }
 function tags(iso, half, data) {
   const counts = (data.cells[iso] || {})[half] || {};
@@ -204,7 +238,7 @@ function render(data) {
 function show(tab) {
   document.getElementById('home-view').style.display = tab === 'home' ? '' : 'none';
   document.getElementById('owo-view').style.display = tab === 'owo' ? '' : 'none';
-  if (tab === 'owo') load();
+  if (tab === 'owo') { clearCache(); load(false); }
 }
 document.querySelectorAll('[data-tab]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); show(a.dataset.tab); }));
 document.getElementById('user-menu').addEventListener('click', () => {
@@ -216,17 +250,18 @@ document.getElementById('logout-link').addEventListener('click', async e => {
   await fetch('/api/logout', {method: 'POST'});
   location.href = '/login';
 });
-statusButtons().forEach(b => b.addEventListener('click', () => { if (!busy()) load(); }));
+statusButtons().forEach(b => b.addEventListener('click', () => { if (!busy()) { clearCache(); load(true); } }));
 document.getElementById('next').addEventListener('click', () => {
   if (busy()) return;
   if (++view.month > 12) { view.month = 1; view.year++; }
-  load();
+  load(false);
 });
 document.getElementById('prev').addEventListener('click', () => {
   if (busy()) return;
   if (--view.month < 1) { view.month = 12; view.year--; }
-  load();
+  load(false);
 });
+connectLive();
 
 body.addEventListener('click', e => {
   const tag = e.target.closest('span.badge[data-status="available"]');
@@ -270,7 +305,8 @@ async function accept(id, details, needConfirm) {
   try { data = await res.json(); } catch (e) {}
   details.remove();
   if (data.message) toast(data.message);
-  load();
+  clearCache();
+  load(true);
 }
 function toast(text) {
   const t = document.createElement('div');

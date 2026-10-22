@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import copy
+import json
 import socket
 import threading
 import time
@@ -64,3 +66,16 @@ class MockServer:
     def expire_sessions(self) -> None:
         with self.state.lock:
             self.state.sessions.clear()
+
+    def push_event(self, name: str, data: dict) -> int:
+        frame = "42" + json.dumps([name, data])
+        with self.state.lock:
+            clients = list(self.state.live_clients)
+        sent = 0
+        for websocket, loop in clients:
+            try:
+                asyncio.run_coroutine_threadsafe(websocket.send_text(frame), loop).result(timeout=5)
+                sent += 1
+            except Exception:
+                continue
+        return sent
