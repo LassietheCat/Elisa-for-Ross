@@ -35,6 +35,8 @@ DEFAULT_CONFIG = {
     "accept_result_status": "applied",
     "confirm_dialog": False,
     "button_label": "Accept",
+    "details_style": "panel",
+    "distance_prompt": False,
     "schedule_drift": False,
     "rate_limited_times": 0,
     "retry_after": "",
@@ -67,6 +69,7 @@ class MockState:
                 "rate_limited": 0,
                 "open_list_loads": [],
                 "live_rooms": 0,
+                "count_months": [],
             }
 
     def set_work_orders(self, items: list[dict]) -> None:
@@ -200,6 +203,7 @@ def create_app(state: MockState) -> FastAPI:
         start, end = in_range(await request.json(), "filter")
         await asyncio.sleep(state.config["loading_delay_ms"] / 2000)
         with state.lock:
+            state.stats["count_months"].append(start[:7])
             in_window = [wo for wo in state.work_orders if start <= wo["date"] <= end]
         count = {name: sum(1 for wo in in_window if wo["status"] == status)
                  for status, name in (("assigned", "assigned"), ("applied", "applied"), ("confirmed", "confirmed"), ("available", "new"))}
@@ -250,6 +254,8 @@ def create_app(state: MockState) -> FastAPI:
                         if wo["date"] == day and wo["half"] == half and wo["status"] == "available"]
             label = None if state.config["apply_mode"] == "no_button" else state.config["button_label"]
             confirm = state.config["confirm_dialog"]
+            style = state.config["details_style"]
+            distance = state.config["distance_prompt"]
         return {
             "work_orders": [
                 {"id": wo["id"], "number": f"WO {9990000 + int(wo['id'])}", "court": "CONFIDENTIAL-COURT",
@@ -259,24 +265,48 @@ def create_app(state: MockState) -> FastAPI:
             ],
             "button_label": label,
             "confirm": confirm,
+            "style": style,
+            "distance": distance,
         }
+
+    def take(wo_id: str) -> str:
+        with state.lock:
+            state.stats["accept_calls"].append(wo_id)
+            wo = next((w for w in state.work_orders if w["id"] == wo_id), None)
+            mode = state.config["apply_mode"]
+            if mode == "error":
+                return "error"
+            if wo is None or wo["status"] != "available" or mode == "taken":
+                if wo is not None and mode == "taken":
+                    wo["status"] = "taken"
+                return "taken"
+            wo["status"] = state.config["accept_result_status"]
+        return "ok"
 
     @app.post("/api/mock/accept/{wo_id}")
     async def accept(request: Request, wo_id: str):
         if not signed_in(request):
             return unauthorized()
         await asyncio.sleep(0.05)
-        with state.lock:
-            state.stats["accept_calls"].append(wo_id)
-            wo = next((w for w in state.work_orders if w["id"] == wo_id), None)
-            mode = state.config["apply_mode"]
-            if mode == "error":
-                return JSONResponse({"message": "Unexpected server error."}, status_code=500)
-            if wo is None or wo["status"] != "available" or mode == "taken":
-                if wo is not None and mode == "taken":
-                    wo["status"] = "taken"
-                return JSONResponse({"message": "This work order is no longer available."}, status_code=409)
-            wo["status"] = state.config["accept_result_status"]
+        result = take(wo_id)
+        if result == "error":
+            return JSONResponse({"message": "Unexpected server error."}, status_code=500)
+        if result == "taken":
+            return JSONResponse({"message": "This work order is no longer available."}, status_code=409)
         return {"message": "Work order accepted successfully."}
+
+    @app.post("/api/open-work-orders/{client}/create")
+    async def create_open_work_order(request: Request, client: str):
+        if not signed_in(request):
+            return unauthorized()
+        body = await request.json()
+        data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else {}
+        await asyncio.sleep(0.05)
+        result = take(str(data.get("coi")))
+        if result == "error":
+            return JSONResponse({"message": "Unexpected server error."}, status_code=500)
+        if result == "taken":
+            return {"status": False, "message": "COI Is No Longer Available for Assignment. Please refresh your screen and apply!"}
+        return {"status": True, "message": "Work Order Accept Successfully"}
 
     return app

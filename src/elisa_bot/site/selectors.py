@@ -44,12 +44,15 @@ class Selectors:
     day_number: str = ".date"
     half_badge: str = ".time-slab-badge"
     tag: str = "span.badge:not(.time-slab-badge)"
+    open_badge: str = ".calender-cell-badge"
     status_words: dict[str, str] = field(default_factory=lambda: dict(_STATUS_WORDS))
     schedule_api: str = "/interpreter-scheduled"
     counts_api: str = "/get-open-work-order-count1"
     open_list_api: str = "/get-open-work-order"
     live_path: str = "/socket.io/"
 
+    list_accept_button: str = 'button[ng-click^="onAccept"]'
+    accept_api_re: str = r"/open-work-orders/[^/]+/create$"
     dialog: str = ".modal.show, .modal.in, [role=dialog]"
     dialog_buttons: str = "button, a.btn, input[type=button], input[type=submit]"
     accept_button_re: str = r"^\s*(accept|apply)\s*$"
@@ -57,6 +60,7 @@ class Selectors:
     close_button_re: str = r"^\s*(close|cancel|×|✕|x)\s*$"
     message: str = ".toast, .alert, [role=alert], .text-danger, .alert-danger, .swal2-popup, .toast-message, .noty_body"
     accept_failure_re: str = r"(no longer available|not available|already|taken|unable|error|failed|conflict)"
+    accept_taken_re: str = r"(no longer available|not available|already|taken)"
 
 
 def load_selectors(path: Path | None) -> Selectors:

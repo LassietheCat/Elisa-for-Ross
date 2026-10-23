@@ -348,7 +348,9 @@ async def test_forced_failures_send_exactly_one_alert_then_recover(mock, tmp_pat
 def test_month_rotation_moves_one_month_at_a_time():
     months = [(2026, 10), (2026, 11), (2026, 12)]
     rotation = MonthRotation()
-    assert [rotation.next(months) for _ in range(8)] == [(2026, 10), (2026, 11), (2026, 12), (2026, 11)] * 2
+    assert [rotation.next(months) for _ in range(8)] == [
+        (2026, 10), (2026, 11), (2026, 12), (2026, 12), (2026, 11), (2026, 10), (2026, 10), (2026, 11),
+    ]
     single = MonthRotation()
     assert [single.next([(2026, 10)]) for _ in range(3)] == [(2026, 10)] * 3
 
@@ -363,10 +365,10 @@ async def test_always_on_bot_loads_one_month_per_check(mock, tmp_path):
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
-    assert mock.stats()["open_list_loads"][:7] == [
-        "2026-10", "2026-11", "2026-12", "2026-11", "2026-10", "2026-11", "2026-12",
-    ]
-    assert mock.stats()["logins_ok"] == 1
+    stats = mock.stats()
+    assert stats["open_list_loads"][:7] == ["2026-10", "2026-11", "2026-12", "2026-12", "2026-11", "2026-10", "2026-10"]
+    assert stats["count_months"][:7] == stats["open_list_loads"][:7]
+    assert stats["logins_ok"] == 1
 
 
 @pytest.mark.browser
@@ -486,6 +488,39 @@ async def test_quick_checks_keep_going_while_a_failed_calendar_read_waits(mock, 
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
+
+
+def test_quick_checks_keep_their_own_schedule(tmp_path):
+    now = [0.0]
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now, timer=lambda: now[0])
+    quick.every = 80
+    due = []
+    for moment in (0, 60, 80, 120, 159, 160):
+        now[0] = moment
+        due.append(quick.due())
+    assert due == [False, False, True, False, False, True]
+    quick.reset()
+    assert quick.due() is False and quick.next_at == 240
+
+
+async def test_a_quick_check_slower_than_the_calendar_reads_still_runs(tmp_path):
+    settings = fast(make_settings(tmp_path, "http://127.0.0.1:9"))
+    controls = ControlStore(settings)
+    controls.update(by="test", now=fixed_now(), enabled=True, poll_seconds=6)
+    quick = QuickCheck(settings, fixed_now)
+    quick.every = 7
+    loop = asyncio.get_running_loop()
+    asked = []
+
+    async def ask() -> bool:
+        asked.append(loop.time())
+        return False
+
+    for _ in range(2):
+        await service._wait_for_next(
+            asyncio.Event(), controls, loop.time(), 0, quick=ask, quick_every=quick.every, quick_due=quick.due
+        )
+    assert len(asked) == 1
 
 
 async def test_quick_checks_say_once_when_they_start_and_once_when_they_get_no_answer(tmp_path, caplog):

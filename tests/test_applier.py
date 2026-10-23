@@ -45,7 +45,7 @@ async def test_accepts_the_opening(mock, session):
 
 
 async def test_answers_an_are_you_sure_window(mock, session):
-    mock.configure(confirm_dialog=True)
+    mock.configure(details_style="modal", confirm_dialog=True)
     mock.set_work_orders([wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=False)
     result = await applier.apply_one(S("2026-10-14 AM"))
@@ -54,7 +54,7 @@ async def test_answers_an_are_you_sure_window(mock, session):
 
 
 async def test_takes_only_one_of_two_openings_in_a_slot(mock, session):
-    mock.configure(confirm_dialog=True)
+    mock.configure(details_style="modal", confirm_dialog=True)
     mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=False)
     result = await applier.apply_one(S("2026-10-14 AM"))
@@ -89,7 +89,7 @@ async def test_no_accept_button(mock, session):
 
 
 async def test_an_apply_label_is_recognised_too(mock, session):
-    mock.configure(button_label="Apply")
+    mock.configure(details_style="modal", button_label="Apply")
     mock.set_work_orders([wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=True)
     assert (await applier.apply_one(S("2026-10-14 AM"))).outcome is ApplyOutcome.TEST_MODE
@@ -128,6 +128,7 @@ def flaky_recheck(monkeypatch, failures: int) -> list:
 
 
 async def test_a_slow_result_is_looked_at_once_more_before_asking_the_owner_to_check(mock, session, monkeypatch):
+    mock.configure(details_style="modal")
     mock.set_work_orders([wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=False)
     calls = flaky_recheck(monkeypatch, failures=1)
@@ -136,9 +137,36 @@ async def test_a_slow_result_is_looked_at_once_more_before_asking_the_owner_to_c
 
 
 async def test_two_failed_looks_ask_the_owner_to_check(mock, session, monkeypatch):
+    mock.configure(details_style="modal")
     mock.set_work_orders([wo("2026-10-14", "AM", "available")])
     applier = await make_applier(session, test_mode=False)
     calls = flaky_recheck(monkeypatch, failures=2)
     result = await applier.apply_one(Slot.parse("2026-10-14 AM"))
     assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.UNVERIFIED, "check_failed", True)
     assert len(calls) == 2 and len(mock.stats()["accept_calls"]) == 1
+
+
+async def test_the_real_details_list_accepts_by_elisas_own_answer(mock, session):
+    mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(S("2026-10-14 AM"))
+    assert (result.outcome, result.clicked) == (ApplyOutcome.APPLIED, True)
+    assert mock.stats()["accept_calls"] == ["1"]
+    assert await session.page.locator("#wo-panel").is_visible()
+
+
+async def test_the_on_site_driving_distance_prompt_is_answered(mock, session):
+    mock.configure(distance_prompt=True)
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(S("2026-10-14 AM"))
+    assert result.outcome is ApplyOutcome.APPLIED
+    assert mock.stats()["accept_calls"] == ["1"]
+    assert await no_window_open(session)
+
+
+async def test_a_label_elisa_fills_in_itself_does_not_matter(mock, session):
+    mock.configure(button_label="VRI")
+    mock.set_work_orders([wo("2026-10-14", "PM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    assert (await applier.apply_one(S("2026-10-14 PM"))).outcome is ApplyOutcome.APPLIED

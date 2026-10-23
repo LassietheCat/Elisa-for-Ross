@@ -123,6 +123,7 @@ td.past-date{background:#f8f8f8} td.today{background:#e0ebf7}
         <th class="day-name">Thu</th><th class="day-name">Fri</th><th class="day-name">Sat</th>
       </tr></thead><tbody id="cal-body"></tbody></table>
     </div>
+    <div id="wo-panel" class="date-content" style="display:none"></div>
   </section>
 </main>
 <div class="footer">Proprietary and Confidential</div>
@@ -197,19 +198,25 @@ function connectLive() {
 }
 function tags(iso, half, data) {
   const counts = (data.cells[iso] || {})[half] || {};
-  return ['available', 'applied', 'assigned', 'confirmed', 'cancelled'].filter(s => counts[s]).map(s =>
+  const open = counts.available ? `<div class="ng-scope"><div class="calender-day-box" data-slot="${iso} ${half}" style="background-color: rgb(91, 155, 213); color: rgb(255, 255, 255);">
+      <span class="badge badge-primary calender-cell-badge">${counts.available}</span> <span style="line-height: 25px;">MOCK1</span></div></div>` : '';
+  return open + ['applied', 'assigned', 'confirmed', 'cancelled'].filter(s => counts[s]).map(s =>
     `<div class="ng-scope"><span class="badge ${WORDS[s][1]} ng-binding" data-slot="${iso} ${half}" data-status="${s}">${counts[s]} ${WORDS[s][0]}</span></div>`
   ).join('');
+}
+function openCount(iso, half, data) {
+  const count = ((data.cells[iso] || {})[half] || {}).available;
+  return count ? ` <span class="badge badge-primary time-slab-badge">${count}</span>` : '';
 }
 function cell(iso, day, data) {
   const holiday = data.holidays[iso] ? `<div class="holiday-name">${data.holidays[iso]}</div>` : '';
   return `<div class="date-cell ng-scope">
     <div class="d-flex block-am flex-1">
-      <div class="calendar-date"><div class="date ng-binding">${day}</div><div class="mt-2"><span class="badge badge-default time-slab-badge">AM</span></div></div>
+      <div class="calendar-date"><div class="date ng-binding">${day}</div><div class="mt-2"><span class="badge badge-default time-slab-badge">AM</span>${openCount(iso, 'AM', data)}</div></div>
       <div class="w-100 calender-data"><div class="block _block-am w-100">${holiday}${tags(iso, 'AM', data)}</div></div>
     </div>
     <div class="d-flex align-items-center_ flex-1">
-      <div class="calendar-date"><div class="mt-2"><span class="badge badge-default time-slab-badge">PM</span></div></div>
+      <div class="calendar-date"><div class="mt-2"><span class="badge badge-default time-slab-badge">PM</span>${openCount(iso, 'PM', data)}</div></div>
       <div class="w-100 calender-data"><div class="block _block-am w-100">${tags(iso, 'PM', data)}</div></div>
     </div>
   </div>`;
@@ -264,8 +271,8 @@ document.getElementById('prev').addEventListener('click', () => {
 connectLive();
 
 body.addEventListener('click', e => {
-  const tag = e.target.closest('span.badge[data-status="available"]');
-  if (tag) openWorkOrders(tag.dataset.slot);
+  const box = e.target.closest('.calender-day-box');
+  if (box) openWorkOrders(box.dataset.slot);
 });
 function modal(id, inner) {
   const m = document.createElement('div');
@@ -279,6 +286,7 @@ function modal(id, inner) {
 async function openWorkOrders(slot) {
   const res = await api(`/api/mock/details?slot=${encodeURIComponent(slot)}`);
   const data = await res.json();
+  if (data.style === 'panel') { showPanel(data); return; }
   const cards = data.work_orders.map(w => `<div class="wo-card">
       <div>${w.number}</div><div>${w.court}</div><div>${w.language}</div><div>${w.judge}</div><div>${w.time}</div>
       ${data.button_label ? `<button class="btn btn-success accept-btn" data-id="${w.id}">${data.button_label}</button>` : ''}
@@ -308,9 +316,36 @@ async function accept(id, details, needConfirm) {
   clearCache();
   load(true);
 }
-function toast(text) {
+function showPanel(data) {
+  const panel = document.getElementById('wo-panel');
+  const rows = data.work_orders.map(w => `<div class="lang-list"><div class="d-flex justify-spac-between">
+      <span>${w.court} | </span><span>${w.language} | </span><span><b>${w.time}</b></span>
+      ${data.button_label ? `<button class="btn_ btn-xs btn-primary border-solid" ng-click="onAccept(item)" data-id="${w.id}"><span>${data.button_label}</span></button>` : ''}
+    </div></div>`).join('');
+  panel.innerHTML = `<div class="scheduled"><div class="panel-collapse" role="tabpanel">${rows || '<span>No Scheduled WOs.</span>'}</div></div>`;
+  panel.style.display = '';
+  panel.querySelectorAll('button[data-id]').forEach(b => b.addEventListener('click', () => onAccept(b.dataset.id, data.distance)));
+}
+function askDistance() {
+  return new Promise(resolve => {
+    const m = modal('distance-modal', `<h4>Confirm</h4><p>The driving distance from your registered address to the court is 12 miles.</p>
+        <button class="btn btn-success" id="continue">Continue</button> <button class="btn btn-danger" id="cancel">Cancel</button>`);
+    m._resolve = resolve;
+    m.querySelector('#continue').addEventListener('click', () => { m.remove(); resolve(true); });
+    m.querySelector('#cancel').addEventListener('click', () => { m.remove(); resolve(false); });
+  });
+}
+async function onAccept(id, distance) {
+  if (distance && !(await new Promise(r => setTimeout(r, 300)).then(askDistance))) return;
+  const res = await api('/api/open-work-orders/mock-client/create', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({_id: 'mock-client', data: {coi: id, replocId: 'MOCK1', status: 'ACCEPT'}})});
+  let data = {};
+  try { data = await res.json(); } catch (e) {}
+  toast(data.message || 'Unexpected server error.', data.status ? 'alert-success' : 'alert-danger');
+}
+function toast(text, kind) {
   const t = document.createElement('div');
-  t.className = 'toast show';
+  t.className = `toast show alert ${kind || ''}`;
   t.setAttribute('role', 'alert');
   t.textContent = text;
   document.body.appendChild(t);

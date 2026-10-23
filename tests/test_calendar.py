@@ -48,6 +48,20 @@ async def test_reads_each_status_into_the_right_day_and_half(mock, session):
     assert reading.available() == {S("2026-10-14 AM"), S("2026-10-31 PM")}
 
 
+async def test_elisas_number_badge_with_a_court_code_is_an_opening(mock, session):
+    mock.set_work_orders([
+        wo("2026-11-03", "AM", "assigned"),
+        wo("2026-11-03", "PM", "available"),
+        wo("2026-11-03", "PM", "available"),
+    ])
+    reader = await ready_reader(session)
+    await reader.go_to_month(2026, 11)
+    reading = await reader.read_displayed_month()
+    assert reading.slots[S("2026-11-03 PM")] == SlotTags(available=2)
+    assert reading.slots[S("2026-11-03 AM")] == SlotTags(assigned=1)
+    assert reading.unread == {} and reading.unknown_words == set()
+
+
 async def test_reads_this_month_and_next(mock, session):
     mock.set_work_orders([wo("2026-10-22", "PM", "available"), wo("2026-11-03", "AM", "available")])
     reader = await ready_reader(session)

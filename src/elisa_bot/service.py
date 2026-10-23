@@ -52,7 +52,7 @@ class MonthRotation:
 
     def next(self, months: list[tuple[int, int]]) -> tuple[int, int]:
         count = len(months)
-        pattern = list(range(count)) + list(range(count - 2, 0, -1))
+        pattern = list(range(count)) + list(range(count - 1, -1, -1))
         target = months[pattern[self.step % len(pattern)]]
         self.step += 1
         return target
@@ -79,11 +79,22 @@ class QuickCheck:
         self.open_seen: dt.datetime | None = None
         self.answering_since: dt.datetime | None = None
         self.answers: deque[tuple[dt.datetime, int]] = deque(maxlen=3)
+        self.next_at: float | None = None
 
     def reset(self) -> None:
         self.known = None
         self.paused = False
         self.misses = 0
+        self.next_at = None
+
+    def due(self) -> bool:
+        now = self.timer()
+        if self.next_at is None:
+            self.next_at = now + self.every
+        if now < self.next_at:
+            return False
+        self.next_at = now + self.every
+        return True
 
     def calendar_read(self) -> None:
         self.paused = False
@@ -106,6 +117,7 @@ class QuickCheck:
             self.paused = True
             self.refused_at = self.timer()
             self.every = min(QUICK_MAX_S, self.every * 2)
+            self.next_at = self.refused_at + self.every
             log.warning(
                 "Quick check refused by the site (429); pausing until the next calendar read, then every %d s", self.every
             )
@@ -414,6 +426,7 @@ async def run_forever(
                 at_least=at_least,
                 quick=(lambda: quick.check(session)) if can_quick else None,
                 quick_every=quick.every,
+                quick_due=quick.due,
                 tick=lambda: _tick(heartbeat, quick, status),
                 live=(lambda: quick.live(session)) if can_live else None,
             )
@@ -458,6 +471,7 @@ async def _wait_for_next(
     at_least: int = 0,
     quick: Callable[[], Awaitable[bool]] | None = None,
     quick_every: float = 0,
+    quick_due: Callable[[], bool] | None = None,
     tick: Callable[[], Awaitable[None]] | None = None,
     live: Callable[[], bool] | None = None,
 ) -> bool:
@@ -475,12 +489,12 @@ async def _wait_for_next(
         remaining = started + delay - loop.time()
         if remaining <= 0:
             return False
-        if quick is not None and loop.time() >= next_quick and remaining > 2:
+        if quick is not None and remaining > 2 and (quick_due() if quick_due is not None else loop.time() >= next_quick):
             next_quick = loop.time() + quick_every
             if await quick():
                 return True
             continue
-        until_quick = next_quick - loop.time() if quick is not None else remaining
+        until_quick = next_quick - loop.time() if quick is not None and quick_due is None else remaining
         await _sleep(stop, max(0.05, min(1.0, remaining, until_quick)))
     return False
 

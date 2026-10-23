@@ -24,6 +24,7 @@ _WALK_JS = r"""
   const txt = el => (el.textContent || '').replace(/\s+/g, ' ').trim();
   const shown = el => el.getClientRects().length > 0;
   const TAG = /^(\d+)\s+([A-Za-z][A-Za-z ]*)$/;
+  const NUMBER = /^\d+$/;
   function* walk() {
     for (const td of document.querySelectorAll(sel.dayCell)) {
       if (!shown(td)) continue;
@@ -41,8 +42,10 @@ _WALK_JS = r"""
         while (block.parentElement && block.parentElement !== cell) block = block.parentElement;
         const tags = [];
         for (const el of block.querySelectorAll(sel.tag)) {
-          const m = txt(el).match(TAG);
+          const text = txt(el);
+          const m = text.match(TAG);
           if (m) tags.push({ count: parseInt(m[1], 10), word: m[2].trim(), el });
+          else if (el.matches(sel.openBadge) && NUMBER.test(text)) tags.push({ count: parseInt(text, 10), word: 'Available', el });
         }
         halves[half] = tags;
         read += tags.length;
@@ -112,6 +115,7 @@ class CalendarReader:
             "dayNumber": s.day_number,
             "halfBadge": s.half_badge,
             "tag": s.tag,
+            "openBadge": s.open_badge,
             **extra,
         }
 

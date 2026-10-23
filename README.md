@@ -65,14 +65,19 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     at once) and opens only the months that have openings, then accepts. Openings
     are often taken within a minute, so this is what makes the bot fast.
   - **Calendar read, every `POLL_SECONDS` (60 by default, never below
-    `MIN_POLL_SECONDS`, 15):** it reads one month, moving one month at a time
-    (Oct → Nov → Dec → Nov → Oct …). This keeps the page and the sign-in fresh, gives
-    the quick check its request to replay, and catches anything the count misses.
-    The page keeps each month's open work orders once it has loaded them, and moving
-    between months reuses that list; only the **Available** button loads it again. The
-    bot watches the page's own list requests and clicks Available whenever the month
-    it is about to read wasn't loaded during this check, so every read is fresh, with
-    one list load per read.
+    `MIN_POLL_SECONDS`, 15):** it reads one month, sweeping one month at a time
+    (Oct → Nov → Dec → Dec → Nov → Oct → Oct …). This keeps the page and the sign-in
+    fresh, gives the quick check its request to replay, and catches anything the count
+    misses. The page keeps each month's open work orders once it has loaded them, and
+    moving between months reuses that list; only the **Available** button loads it
+    again. The bot watches the page's own list requests and clicks Available whenever
+    the month it is about to read wasn't loaded during this check, so every read is
+    fresh. The sweep only ever moves to a month the page hasn't stored since its last
+    reload, or reloads the month it is on, so each read costs one list load and one
+    count request.
+  - **Open orders on the calendar** are number badges (`calender-cell-badge`, for
+    example "1") with the court code beside them, grouped by court in each half-day.
+    The bot counts them as openings in that half-day and reads nothing else from them.
   - **Live channel:** the page keeps a websocket open to Elisa and joins a room for
     each of the owner's languages. The bot listens to what arrives on its own page; it
     adds no requests. Each event is logged by name, date and AM/PM only. An order
@@ -83,8 +88,10 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     strictly: quick checks every 10 s drew refusals within minutes, every 20 s none.
     When a quick check is refused, quick checks pause until the next calendar read and
     then run half as often (down to every 2 minutes); after 30 minutes without a
-    refusal they go back to `QUICK_CHECK_SECONDS`. They also pause while Elisa refuses
-    calendar reads and during the quiet periods below.
+    refusal they go back to `QUICK_CHECK_SECONDS`. They keep their own schedule across
+    calendar reads, so a slow quick check still runs when calendar reads come sooner.
+    They also pause while Elisa refuses calendar reads and during the quiet periods
+    below.
 
   Signing in is itself a burst of requests, so after a sign-in the bot reads the
   calendar that just loaded and then waits `QUIET_AFTER_SIGN_IN_SECONDS` (90) before
@@ -257,8 +264,16 @@ it again.
 ## Safety rules
 
 - **Test mode is the code's default** (`TEST_MODE=true`): the bot opens the opening,
-  finds the Accept button and closes the window without clicking. The server runs
-  with `TEST_MODE=false`.
+  finds the Accept button and doesn't click it. The server runs with `TEST_MODE=false`.
+- **How Accept works on Elisa:** clicking the badge opens the court's list of work
+  orders under the calendar. The bot clicks the first Accept button in that half-day
+  (found by its `onAccept` handler, since Elisa fills in the label itself). For an
+  on-site job Elisa first shows the driving distance; the bot answers **Continue**.
+  The bot then reads Elisa's own answer to the request (`status` true or false):
+  true is "Applied", "No Longer Available" is "Missed", anything else is "please
+  check". In Elisa's code an Accept is an application, which Anya can withdraw until
+  SOSi assigns the job. If Elisa shows a pop-up window instead of the list, the bot
+  uses the Accept button in that window.
 - **Missed openings are reported:** if Elisa's own count lists more open work orders
   than the bot sees, or a calendar tag can't be read, one "the bot may be missing
   openings" email goes out.
@@ -278,7 +293,8 @@ it again.
 - **Doubtful reads are dropped:** a check where the site rate-limited the bot or a
   calendar data request failed accepts nothing and doesn't update the saved state.
 - **Privacy:** only the date + AM/PM of a slot is stored, logged or emailed. Job
-  details in the work-order window are never read. Credentials come from `.env`
+  details in the work-order list and in Elisa's live events are never stored, logged
+  or sent. Credentials come from `.env`
   or `*_FILE` secret files, are hidden from `repr()`, and are redacted from logs.
   No screenshots or browser recordings are saved. Logs and state are owner-only (0600).
 
