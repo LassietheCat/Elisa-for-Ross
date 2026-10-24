@@ -431,7 +431,7 @@ async def test_refusals_slow_quick_checks_down_until_a_calm_half_hour(tmp_path):
     now = [0.0]
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now, timer=lambda: now[0])
     busy = SiteBusy("the site answered 429 Too Many Requests")
-    session = CountingSession(busy, busy, busy, busy, 0, 0)
+    session = CountingSession(busy, busy, busy, busy, 0, 0, 0, 0, 0)
     everies = []
     for _ in range(4):
         await quick.check(session)
@@ -442,6 +442,15 @@ async def test_refusals_slow_quick_checks_down_until_a_calm_half_hour(tmp_path):
     await quick.check(session)
     assert quick.every == 120
     now[0] = 1800
+    await quick.check(session)
+    assert quick.every == 60
+    now[0] = 3599
+    await quick.check(session)
+    assert quick.every == 60
+    now[0] = 3600
+    await quick.check(session)
+    assert quick.every == 30
+    now[0] = 5400
     await quick.check(session)
     assert quick.every == 20
 

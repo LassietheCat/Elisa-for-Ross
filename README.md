@@ -88,7 +88,7 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     strictly: quick checks every 10 s drew refusals within minutes, every 20 s none.
     When a quick check is refused, quick checks pause until the next calendar read and
     then run half as often (down to every 2 minutes); after 30 minutes without a
-    refusal they go back to `QUICK_CHECK_SECONDS`. They keep their own schedule across
+    refusal they step back up (halving the interval, never below `QUICK_CHECK_SECONDS`), one step per calm half hour. They keep their own schedule across
     calendar reads, so a slow quick check still runs when calendar reads come sooner.
     They also pause while Elisa refuses calendar reads and during the quiet periods
     below.
@@ -271,8 +271,8 @@ it again.
   on-site job Elisa first shows the driving distance; the bot answers **Continue**.
   The bot then reads Elisa's own answer to the request (`status` true or false):
   true is "Applied", "No Longer Available" is "Missed", anything else is "please
-  check". In Elisa's code an Accept is an application, which Anya can withdraw until
-  SOSi assigns the job. If Elisa shows a pop-up window instead of the list, the bot
+  check". Elisa assigns the job the moment it is accepted, and an assigned job can
+  only be withdrawn by emailing SOSi, so every Accept is binding. If Elisa shows a pop-up window instead of the list, the bot
   uses the Accept button in that window.
 - **Missed openings are reported:** if Elisa's own count lists more open work orders
   than the bot sees, or a calendar tag can't be read, one "the bot may be missing

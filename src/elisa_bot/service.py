@@ -104,8 +104,9 @@ class QuickCheck:
             return False
         base = self.settings.quick_check_seconds
         if self.every > base and self.refused_at is not None and self.timer() - self.refused_at >= QUICK_RECOVER_S:
-            self.every = base
-            log.info("Quick checks back to every %d s", base)
+            self.every = max(base, self.every // 2)
+            self.refused_at = self.timer()
+            log.info("Quick checks back to every %d s", self.every)
         today = self.clock().date()
         months = target_months(today, self.settings.months_to_check)
         last_year, last_month = months[-1]
