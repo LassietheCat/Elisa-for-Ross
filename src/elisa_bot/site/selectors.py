@@ -49,6 +49,8 @@ class Selectors:
     schedule_api: str = "/interpreter-scheduled"
     counts_api: str = "/get-open-work-order-count1"
     open_list_api: str = "/get-open-work-order"
+    job_details_api: str = "/interpreter-scheduled-details"
+    order_row: str = '[ng-repeat^="item in items"]'
     live_path: str = "/socket.io/"
 
     list_accept_button: str = 'button[ng-click^="onAccept"]'

@@ -318,7 +318,7 @@ async function accept(id, details, needConfirm) {
 }
 function showPanel(data) {
   const panel = document.getElementById('wo-panel');
-  const rows = data.work_orders.map(w => `<div class="lang-list"><div class="d-flex justify-spac-between">
+  const rows = data.work_orders.map(w => `<div class="lang-list" ng-repeat="item in items | selection"><div class="d-flex justify-spac-between">
       <span>${w.court} | </span><span>${w.language} | </span><span><b>${w.time}</b></span>
       ${data.button_label ? `<button class="btn_ btn-xs btn-primary border-solid" ng-click="onAccept(item)" data-id="${w.id}"><span>${data.button_label}</span></button>` : ''}
     </div></div>`).join('');

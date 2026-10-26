@@ -251,3 +251,19 @@ def test_the_page_can_be_saved_to_a_home_screen(tmp_path):
     page = client.get("/login").text
     assert '<link rel="apple-touch-icon" href="/icon-180.png">' in page
     assert "img-src 'self'; manifest-src 'self'" in client.get("/login").headers["content-security-policy"]
+
+
+def test_jobs_per_day_can_be_set_between_one_and_four(tmp_path):
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    page = client.get("/").text
+    assert "Jobs per day" in page and "at least 3 hours apart" in page
+    assert ControlStore(settings).load().max_jobs_per_day == 3
+    client.post("/jobs-per-day", data={"max_jobs_per_day": "2", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().max_jobs_per_day == 2
+    client.post("/jobs-per-day", data={"max_jobs_per_day": "9", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().max_jobs_per_day == 4
+    client.post("/jobs-per-day", data={"max_jobs_per_day": "many", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().max_jobs_per_day == 4
+    assert client.post("/jobs-per-day", data={"max_jobs_per_day": "1", "csrf": "wrong"}).status_code == 403
+    assert ControlStore(settings).load().max_jobs_per_day == 4

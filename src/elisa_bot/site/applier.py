@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from playwright.async_api import ElementHandle, Locator, Page, Response
 from playwright.async_api import Error as PlaywrightError
 
-from ..models import ApplyOutcome, ApplyResult, Slot, SlotTags
+from ..models import ApplyOutcome, ApplyResult, Opening, Slot, SlotTags
 from .calendar import CalendarReader
 from .errors import SiteError
 from .selectors import Selectors
@@ -18,6 +18,11 @@ log = logging.getLogger(__name__)
 ACCEPT_ANSWER_S = 10
 _SEEN_ATTR = "data-elisa-bot-seen"
 _SAME_WINDOW_JS = "(el, other) => el === other || el.contains(other) || other.contains(el)"
+_ROW_CLOCK_JS = r"""(el, row) => {
+  const box = el.closest(row) || el.parentElement;
+  const m = (box ? box.innerText : '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  return m ? `${m[1].padStart(2, '0')}:${m[2]} ${m[3].toUpperCase()}` : null;
+}"""
 
 
 class Applier:
@@ -33,7 +38,9 @@ class Applier:
         self._taken_re = re.compile(selectors.accept_taken_re, re.I)
         self._accept_api = re.compile(selectors.accept_api_re)
 
-    async def apply_one(self, slot: Slot) -> ApplyResult:
+    async def apply_one(self, target: Opening | Slot) -> ApplyResult:
+        opening = target if isinstance(target, Opening) else Opening(target)
+        slot = opening.slot
         try:
             tag = await self.reader.find_available_tag(slot)
             if tag is None:
@@ -41,7 +48,7 @@ class Applier:
             await self._mark_current_messages()
             await tag.evaluate("el => el.scrollIntoView({block: 'center'})")
             await tag.click()
-            accept, window = await self._wait_for_accept()
+            accept, window = await self._wait_for_accept(opening.clock)
             if accept is None and window is None:
                 return ApplyResult(slot, ApplyOutcome.ERROR, "no_accept_button")
             if accept is None:
@@ -132,14 +139,16 @@ class Applier:
         code = "site_reported_problem" if site_reported_problem else "no_change"
         return ApplyResult(slot, ApplyOutcome.UNVERIFIED, code, clicked=True)
 
-    async def _wait_for_accept(self, timeout_s: float = 8.0) -> tuple[Locator | None, Locator | None]:
+    async def _wait_for_accept(self, clock: str | None, timeout_s: float = 8.0) -> tuple[Locator | None, Locator | None]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
         while loop.time() < deadline:
             buttons = self.page.locator(self.sel.list_accept_button)
             for i in range(await buttons.count()):
                 button = buttons.nth(i)
-                if await button.is_visible() and await button.is_enabled():
+                if not (await button.is_visible() and await button.is_enabled()):
+                    continue
+                if clock is None or await button.evaluate(_ROW_CLOCK_JS, self.sel.order_row) == clock:
                     return button, None
             windows = await self._visible_windows()
             if windows:

@@ -118,3 +118,18 @@ async def test_a_signed_out_count_gives_no_answer(mock, session):
     await asyncio.sleep(0.5)
     mock.expire_sessions()
     assert await session.count_open(OCT_1, DEC_31, TODAY) is None
+
+
+async def test_reads_the_start_times_of_the_owners_jobs_on_a_day(mock, session):
+    assert await session.job_times(dt.date(2026, 11, 4), TODAY) is None
+    mock.set_work_orders([
+        wo("2026-11-04", "PM", "assigned", "13:30"),
+        wo("2026-11-04", "AM", "confirmed", "08:15"),
+        wo("2026-11-04", "AM", "available", "10:00"),
+        wo("2026-11-05", "AM", "assigned", "09:00"),
+    ])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    times = await session.job_times(dt.date(2026, 11, 4), TODAY)
+    assert [f"{t:%Y-%m-%d %H:%M %Z}" for t in times] == ["2026-11-04 08:15 EST", "2026-11-04 13:30 EST"]
+    assert await session.job_times(dt.date(2026, 11, 6), TODAY) == []

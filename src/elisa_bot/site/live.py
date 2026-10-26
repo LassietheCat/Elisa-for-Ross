@@ -46,10 +46,17 @@ def event_slot(args: list, tz: ZoneInfo) -> tuple[dt.date | None, Half | None]:
     day = _utc_day(data.get("deldate"))
     if day is None:
         return None, None
-    moment = _viewer_time(day, data.get("sched"), data.get("courtTimezone"), tz)
+    moment = start_time(data, tz)
     if moment is None:
         return day, None
     return moment.date(), Half.AM if moment.hour < 12 else Half.PM
+
+
+def start_time(data: dict, tz: ZoneInfo) -> dt.datetime | None:
+    day = _utc_day(data.get("deldate"))
+    if day is None:
+        return None
+    return _viewer_time(day, data.get("sched"), data.get("courtTimezone"), tz)
 
 
 def _utc_day(value: object) -> dt.date | None:

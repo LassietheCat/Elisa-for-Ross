@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import json
 import secrets
 import threading
@@ -70,14 +71,21 @@ class MockState:
                 "open_list_loads": [],
                 "live_rooms": 0,
                 "count_months": [],
+                "job_detail_days": [],
             }
 
     def set_work_orders(self, items: list[dict]) -> None:
         with self.lock:
             self.work_orders = [
-                {"id": str(index), "date": item["date"], "half": item["half"], "status": item["status"]}
+                {"id": str(index), "date": item["date"], "half": item["half"], "status": item["status"],
+                 "time": item.get("time") or ("09:00" if item["half"] == "AM" else "14:00")}
                 for index, item in enumerate(items, start=1)
             ]
+
+
+def order_item(wo: dict) -> dict:
+    return {"deldate": f"{wo['date']}T00:00:00.000Z", "sched": wo["time"], "courtTimezone": "America/New_York",
+            "performOpenWO": []}
 
 
 def create_app(state: MockState) -> FastAPI:
@@ -172,9 +180,19 @@ def create_app(state: MockState) -> FastAPI:
         start, end = in_range(await request.json(), "filterBy")
         with state.lock:
             state.stats["open_list_loads"].append(start[:7])
-            data = [{"date": wo["date"], "half": wo["half"]} for wo in state.work_orders
-                    if wo["status"] == "available" and start <= wo["date"] <= end]
-        return {"status": True, "data": data}
+            data = [order_item(wo) for wo in state.work_orders if wo["status"] == "available" and start <= wo["date"] <= end]
+        return {"status": True, "data": data, "icLangs": ["MOCK"] if data else []}
+
+    @app.post("/api/open-work-orders/{client}/interpreter-scheduled-details")
+    async def scheduled_details(request: Request, client: str):
+        if not signed_in(request):
+            return unauthorized()
+        body = await request.json()
+        day = str((body.get("filterBy") or {}).get("date", ""))
+        with state.lock:
+            state.stats["job_detail_days"].append(day)
+            result = [order_item(wo) for wo in state.work_orders if wo["status"] in SCHEDULE_NAMES and wo["date"] == day]
+        return {"status": True, "result": result}
 
     @app.websocket("/socket.io/")
     async def live(websocket: WebSocket):
@@ -260,7 +278,7 @@ def create_app(state: MockState) -> FastAPI:
             "work_orders": [
                 {"id": wo["id"], "number": f"WO {9990000 + int(wo['id'])}", "court": "CONFIDENTIAL-COURT",
                  "language": "CONFIDENTIAL-LANG", "judge": "CONFIDENTIAL-JUDGE",
-                 "time": "09:00 AM" if half == "AM" else "02:00 PM"}
+                 "time": dt.datetime.strptime(wo["time"], "%H:%M").strftime("%I:%M %p") + " EDT"}
                 for wo in open_now
             ],
             "button_label": label,

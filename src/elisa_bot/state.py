@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 STATE_VERSION = 1
 ACTIVITY_KEPT = 50
 MAX_DAYS_OFF = 366
+MAX_JOBS_PER_DAY = 4
 
 
 @dataclass
@@ -101,6 +102,7 @@ class ControlState:
     updated_at: str | None = None
     updated_by: str | None = None
     days_off: list[str] = field(default_factory=list)
+    max_jobs_per_day: int = 3
 
     def days_off_dates(self) -> set[dt.date]:
         return {dt.date.fromisoformat(day) for day in self.days_off}
@@ -115,6 +117,12 @@ def _valid_days(value: object) -> list[str]:
             except ValueError:
                 continue
     return sorted(days)[:MAX_DAYS_OFF]
+
+
+def _jobs_per_day(value: object) -> int:
+    if type(value) is not int:
+        return ControlState.max_jobs_per_day
+    return min(MAX_JOBS_PER_DAY, max(1, value))
 
 
 class ControlStore:
@@ -140,6 +148,7 @@ class ControlStore:
             updated_at=updated_at if isinstance(updated_at, str) else None,
             updated_by=updated_by if isinstance(updated_by, str) else None,
             days_off=_valid_days(data.get("days_off")),
+            max_jobs_per_day=_jobs_per_day(data.get("max_jobs_per_day")),
         )
 
     def update(
@@ -151,6 +160,7 @@ class ControlStore:
         poll_seconds: int | None = None,
         add_day_off: dt.date | None = None,
         remove_day_off: dt.date | None = None,
+        max_jobs_per_day: int | None = None,
     ) -> ControlState:
         control = self.load()
         if enabled is not None:
@@ -163,6 +173,8 @@ class ControlStore:
         if remove_day_off is not None:
             days.discard(remove_day_off.isoformat())
         control.days_off = sorted(day for day in days if day >= now.date().isoformat())[:MAX_DAYS_OFF]
+        if max_jobs_per_day is not None:
+            control.max_jobs_per_day = _jobs_per_day(max_jobs_per_day)
         control.updated_at = to_iso(now)
         control.updated_by = by
         write_json(self.path, asdict(control))

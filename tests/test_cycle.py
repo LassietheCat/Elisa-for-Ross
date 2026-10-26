@@ -125,14 +125,33 @@ async def test_opening_two_months_ahead_is_found(mock, settings):
     assert capture.messages[0].subject == "Elisa: test mode, opening Thu Dec 10 AM"
 
 
-async def test_skips_a_slot_where_the_owner_already_has_a_job_and_says_so(mock, tmp_path):
+async def test_skips_an_opening_too_close_to_a_job_the_owner_already_has_and_says_so(mock, tmp_path):
     settings = make_settings(tmp_path, mock.base_url, test_mode=False)
     capture = Capture()
     await run(settings, capture)
-    mock.set_work_orders([wo("2026-10-15", "AM", "assigned"), wo("2026-10-15", "AM", "available")])
+    mock.set_work_orders([wo("2026-10-15", "AM", "assigned", "09:00"), wo("2026-10-15", "AM", "available", "10:00")])
+    report = await run(settings, capture)
+    assert report.results == [] and report.skipped_too_close == [S("2026-10-15 AM")]
+    assert mock.stats()["accept_calls"] == []
+    assert capture.messages == [
+        Message(
+            "Elisa: opening Thu Oct 15 AM (too close to another job)",
+            "Not accepted, less than 3 hours from another job: Thu Oct 15 AM.",
+        )
+    ]
+
+
+async def test_without_the_owners_job_times_a_booked_half_day_is_skipped(mock, tmp_path, monkeypatch):
+    async def no_times(self, day, today):
+        return None
+
+    monkeypatch.setattr(SiteSession, "job_times", no_times)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.set_work_orders([wo("2026-10-15", "AM", "assigned", "08:00"), wo("2026-10-15", "AM", "available", "11:30")])
     report = await run(settings, capture)
     assert report.results == [] and report.skipped_booked == [S("2026-10-15 AM")]
-    assert mock.stats()["accept_calls"] == []
     assert capture.messages == [
         Message("Elisa: opening Thu Oct 15 AM (already booked)", "Skipped, you already have a job then: Thu Oct 15 AM.")
     ]
@@ -144,7 +163,7 @@ async def test_skipped_alert_can_be_turned_off(mock, tmp_path):
     await run(settings, capture)
     mock.set_work_orders([wo("2026-10-15", "AM", "assigned"), wo("2026-10-15", "AM", "available")])
     report = await run(settings, capture)
-    assert report.skipped_booked == [S("2026-10-15 AM")] and capture.messages == []
+    assert report.skipped_too_close == [S("2026-10-15 AM")] and capture.messages == []
 
 
 async def test_nothing_private_is_stored_logged_or_sent(mock, tmp_path, caplog):
@@ -425,3 +444,33 @@ async def test_an_opening_on_a_day_off_is_not_accepted(mock, tmp_path):
     state = StateStore(settings.state_path).load()
     assert [(a["slot"], a["outcome"]) for a in state.activity] == [("2026-10-14 AM", "day off"), ("2026-10-15 PM", "applied")]
     assert state.daily[fixed_now().date().isoformat()]["reads"] == 2
+
+
+async def test_several_jobs_a_day_three_hours_apart_are_accepted_by_start_time(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        job = wo("2026-11-10", "AM", "assigned", "09:00")
+        mock.set_work_orders([job])
+        await run(settings, capture, session)
+        mock.set_work_orders([
+            job,
+            wo("2026-11-10", "AM", "available", "10:30"),
+            wo("2026-11-10", "PM", "available", "13:00"),
+            wo("2026-11-10", "PM", "available", "16:00"),
+            wo("2026-11-10", "PM", "available", "17:00"),
+        ])
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert mock.stats()["accept_calls"] == ["3", "4"]
+        assert [r.outcome for r in report.results] == [ApplyOutcome.APPLIED, ApplyOutcome.APPLIED]
+        assert report.skipped_too_close == [S("2026-11-10 AM")] and report.skipped_day_full == [S("2026-11-10 PM")]
+        assert mock.stats()["job_detail_days"] == ["2026-11-10"]
+        assert capture.messages[-1].text == (
+            "Applied: Tue Nov 10 PM, Tue Nov 10 PM. Not accepted, less than 3 hours from another job: Tue Nov 10 AM. "
+            "Not accepted, already 3 jobs that day: Tue Nov 10 PM."
+        )
+        stored = settings.state_path.read_text()
+        assert "13:00" not in stored and "01:00 PM" not in stored and "16:00" not in stored
+    finally:
+        await session.close()

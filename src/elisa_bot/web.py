@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from .config import Settings
 from .models import Slot
 from .notify import Notifier, build_notifier, test_message
-from .state import BotState, ControlState, ControlStore, StateStore
+from .state import MAX_JOBS_PER_DAY, BotState, ControlState, ControlStore, StateStore
 from .timeutil import now_in
 
 COOKIE = "elisa_control"
@@ -51,6 +51,8 @@ OUTCOMES = {
     "test_mode": "found (test mode, not clicked)",
     "skipped": "skipped, already booked then",
     "day off": "skipped, day off",
+    "too close": "skipped, too close to another job",
+    "day full": "skipped, enough jobs that day",
     "gone": "a new opening was gone before the bot could read it",
 }
 FLASH = {
@@ -285,6 +287,18 @@ def _status_page(
         '<button class="secondary" type="submit">Add</button></form></div>'
     )
 
+    jobs_options = "".join(
+        f'<option value="{n}"{" selected" if n == control.max_jobs_per_day else ""}>{n}</option>'
+        for n in range(1, MAX_JOBS_PER_DAY + 1)
+    )
+    gap = settings.job_gap_minutes / 60
+    parts.append(
+        f'<form class="card" method="post" action="/jobs-per-day">{token}<strong>Jobs per day</strong>'
+        f'<p class="muted">At most this many jobs a day, starting at least {gap:g} hours apart (Eastern time).</p>'
+        f'<div class="row"><select id="jobs" name="max_jobs_per_day" aria-label="Jobs per day">{jobs_options}</select>'
+        '<button class="secondary" type="submit">Save</button></div></form>'
+    )
+
     choices = sorted({c for c in INTERVAL_CHOICES if settings.min_poll_seconds <= c <= settings.max_poll_seconds}
                      | {control.poll_seconds})
     options = "".join(
@@ -430,6 +444,18 @@ def create_control_app(
         except ValueError:
             return RedirectResponse("/", status_code=303)
         controls.update(by="web", now=clock(), poll_seconds=seconds)
+        return RedirectResponse("/?msg=saved", status_code=303)
+
+    @app.post("/jobs-per-day")
+    async def jobs_per_day(request: Request):
+        data, problem = await checked_form(request)
+        if problem is not None:
+            return problem
+        try:
+            count = int(data.get("max_jobs_per_day", ""))
+        except ValueError:
+            return RedirectResponse("/", status_code=303)
+        controls.update(by="web", now=clock(), max_jobs_per_day=count)
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/days-off")

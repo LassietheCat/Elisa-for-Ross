@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import datetime as dt
 
+from zoneinfo import ZoneInfo
+
 from elisa_bot.config import Settings
-from elisa_bot.detect import plan_month
-from elisa_bot.models import Slot, SlotTags
+from elisa_bot.detect import openings_in, plan_month
+from elisa_bot.models import Opening, Slot, SlotTags
 from elisa_bot.state import BotState
 
 TODAY = dt.date(2026, 10, 7)
 S = Slot.parse
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def slots_of(openings: list[Opening]) -> list[Slot]:
+    return [opening.slot for opening in openings]
+
+
+def at(text: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(text).replace(tzinfo=NEW_YORK)
 
 
 def open_(n: int = 1) -> SlotTags:
@@ -24,7 +35,7 @@ def test_first_run_only_records_a_baseline():
 
 def test_first_run_can_apply_when_configured():
     plan = plan_month({S("2026-10-14 AM"): open_()}, BotState(), today=TODAY, settings=Settings(apply_on_first_run=True))
-    assert plan.to_apply == [S("2026-10-14 AM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-14 AM")]
 
 
 def test_only_slots_not_seen_last_run_are_new():
@@ -32,7 +43,7 @@ def test_only_slots_not_seen_last_run_are_new():
     slots = {S("2026-10-14 AM"): open_(), S("2026-10-15 PM"): open_(), S("2026-10-16 AM"): SlotTags()}
     plan = plan_month(slots, state, today=TODAY, settings=Settings())
     assert plan.new == {S("2026-10-15 PM")}
-    assert plan.to_apply == [S("2026-10-15 PM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-15 PM")]
 
 
 def test_slot_with_an_assigned_or_confirmed_job_is_skipped():
@@ -50,7 +61,7 @@ def test_a_pending_application_counts_as_booked():
 
 def test_two_openings_in_one_slot_are_one_slot():
     plan = plan_month({S("2026-10-14 AM"): open_(2)}, BotState(baseline_done=True), today=TODAY, settings=Settings())
-    assert plan.to_apply == [S("2026-10-14 AM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-14 AM")]
 
 
 def test_already_accepted_and_past_slots_are_ignored():
@@ -61,14 +72,14 @@ def test_already_accepted_and_past_slots_are_ignored():
 
 def test_todays_slots_are_included():
     plan = plan_month({S("2026-10-07 PM"): open_()}, BotState(baseline_done=True), today=TODAY, settings=Settings())
-    assert plan.to_apply == [S("2026-10-07 PM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-07 PM")]
 
 
 def test_daily_cap_counts_earlier_accepts():
     state = BotState(baseline_done=True, applies_by_day={"2026-10-07": 1})
     slots = {S("2026-10-14 AM"): open_(), S("2026-10-15 AM"): open_(), S("2026-10-16 AM"): open_()}
     plan = plan_month(slots, state, today=TODAY, settings=Settings(max_applies_per_day=3), already_planned=1)
-    assert plan.to_apply == [S("2026-10-14 AM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-14 AM")]
 
 
 def test_zero_cap_means_no_cap():
@@ -101,4 +112,62 @@ def test_a_day_off_is_never_accepted():
         settings=Settings(),
         days_off={dt.date(2026, 10, 14)},
     )
-    assert plan.to_apply == [S("2026-10-15 PM")] and plan.skipped_day_off == [S("2026-10-14 AM")]
+    assert slots_of(plan.to_apply) == [S("2026-10-15 PM")] and plan.skipped_day_off == [S("2026-10-14 AM")]
+
+
+def test_openings_take_their_times_from_elisas_list_and_keep_badges_without_one():
+    slots = {S("2026-11-10 AM"): open_(), S("2026-11-10 PM"): open_(), S("2026-11-13 AM"): SlotTags()}
+    openings = openings_in(slots, [at("2026-11-10T13:00"), at("2026-11-13T09:00")])
+    assert openings == [Opening(S("2026-11-10 AM")), Opening(S("2026-11-10 PM"), at("2026-11-10T13:00"))]
+    assert openings_in(slots, None) == [Opening(S("2026-11-10 AM")), Opening(S("2026-11-10 PM"))]
+
+
+def test_a_second_job_the_same_day_needs_three_hours_between_start_times():
+    slots = {S("2026-11-10 AM"): SlotTags(available=1, assigned=1), S("2026-11-10 PM"): open_(2)}
+    openings = openings_in(slots, [at("2026-11-10T10:00"), at("2026-11-10T13:00"), at("2026-11-10T15:30")])
+    plan = plan_month(
+        slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings,
+        job_times={dt.date(2026, 11, 10): [at("2026-11-10T09:00")]},
+    )
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-10T13:00")]
+    assert plan.skipped_too_close == [S("2026-11-10 AM"), S("2026-11-10 PM")]
+
+
+def test_two_jobs_in_one_afternoon_and_no_more_than_the_daily_maximum():
+    slots = {S("2026-11-12 AM"): SlotTags(confirmed=1), S("2026-11-12 PM"): open_(3)}
+    openings = openings_in(slots, [at("2026-11-12T12:30"), at("2026-11-12T15:30"), at("2026-11-12T18:30")])
+    times = {dt.date(2026, 11, 12): [at("2026-11-12T08:00")]}
+    plan = plan_month(slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings, job_times=times)
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-12T12:30"), at("2026-11-12T15:30")]
+    assert plan.skipped_day_full == [S("2026-11-12 PM")]
+    plan = plan_month(
+        slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings, job_times=times, max_jobs=2
+    )
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-12T12:30")]
+    assert plan.skipped_day_full == [S("2026-11-12 PM"), S("2026-11-12 PM")]
+
+
+def test_without_her_job_times_only_a_free_half_day_is_accepted():
+    slots = {S("2026-11-16 AM"): SlotTags(available=1, assigned=1), S("2026-11-16 PM"): open_()}
+    openings = openings_in(slots, [at("2026-11-16T10:00"), at("2026-11-16T14:00")])
+    for times in (None, []):
+        plan = plan_month(
+            slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings,
+            job_times={dt.date(2026, 11, 16): times},
+        )
+        assert slots_of(plan.to_apply) == [S("2026-11-16 PM")] and plan.skipped_booked == [S("2026-11-16 AM")]
+
+
+def test_an_opening_in_an_already_listed_half_day_is_new_only_if_its_time_is():
+    state = BotState(baseline_done=True, seen=["2026-11-17 PM"])
+    slots = {S("2026-11-17 PM"): open_(2)}
+    openings = openings_in(slots, [at("2026-11-17T13:00"), at("2026-11-17T16:30")])
+    times = {dt.date(2026, 11, 17): []}
+    known = {S("2026-11-17 PM"): {"01:00 PM"}}
+    plan = plan_month(slots, state, today=TODAY, settings=Settings(), openings=openings, known=known, job_times=times)
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-17T16:30")]
+    assert plan_month(slots, state, today=TODAY, settings=Settings(), openings=openings, job_times=times).to_apply == []
+    clicked = {(S("2026-11-17 PM"), "04:30 PM")}
+    assert plan_month(
+        slots, state, today=TODAY, settings=Settings(), openings=openings, known=known, clicked=clicked, job_times=times
+    ).to_apply == []

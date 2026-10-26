@@ -36,6 +36,20 @@ class Slot:
 JOB_STATUSES = ("applied", "assigned", "confirmed")
 
 
+@dataclass(frozen=True)
+class Opening:
+    slot: Slot
+    start: dt.datetime | None = None
+
+    @property
+    def clock(self) -> str | None:
+        return None if self.start is None else f"{self.start:%I:%M %p}"
+
+    @classmethod
+    def at(cls, start: dt.datetime) -> Opening:
+        return cls(Slot(start.date(), Half.AM if start.hour < 12 else Half.PM), start)
+
+
 @dataclass
 class SlotTags:
     available: int = 0

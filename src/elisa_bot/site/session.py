@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import calendar
 import copy
 import datetime as dt
 import json
@@ -10,14 +11,15 @@ import re
 import time
 from collections import deque
 from email.utils import parsedate_to_datetime
-from typing import Awaitable, Callable
-from urllib.parse import urlsplit
+from typing import Awaitable, Callable, Iterable
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from playwright.async_api import Browser, BrowserContext, Locator, Page, Playwright, Request, Response, WebSocket, async_playwright
 from playwright.async_api import Error as PlaywrightError
 
 from ..config import Settings
+from ..models import Opening, Slot
 from .errors import (
     DataRequestFailed,
     InvalidCredentials,
@@ -28,7 +30,7 @@ from .errors import (
     SiteError,
     VerificationRequired,
 )
-from .live import LiveChannel
+from .live import LiveChannel, start_time
 from .selectors import Selectors
 
 log = logging.getLogger(__name__)
@@ -37,6 +39,11 @@ LOGIN_TIMEOUT_S = 30
 SIGN_IN_WINDOW_S = 3600
 _WATCHED_TYPES = ("document", "xhr", "fetch")
 _NOT_REPLAYED = {"content-length", "cookie", "host"}
+
+
+def _taken(item: dict) -> bool:
+    actions = item.get("performOpenWO")
+    return isinstance(actions, list) and any(isinstance(a, dict) and a.get("status") in ("ASSIGN", "CONFIRM") for a in actions)
 
 
 def _date_range(body: dict) -> dict | None:
@@ -94,7 +101,14 @@ class SiteSession:
         self._api_headers: dict[str, str] | None = None
         self._list_seq = 0
         self._list_loads: deque[tuple[int, str]] = deque(maxlen=50)
-        self.live = LiveChannel(ZoneInfo(settings.timezone))
+        self._list_requests: dict[Request, int] = {}
+        self._open_orders: dict[str, tuple[int, list[dt.datetime] | None]] = {}
+        self._order_reads: list[asyncio.Future] = []
+        self._schedule_request: tuple[str, dict] | None = None
+        self.tz = ZoneInfo(settings.timezone)
+        self.live = LiveChannel(self.tz)
+        self.open_times: dict[Slot, set[str]] = {}
+        self.clicked: set[tuple[Slot, str | None]] = set()
 
     @property
     def started(self) -> bool:
@@ -145,6 +159,87 @@ class SiteSession:
         if isinstance(start, str) and len(start) >= 7:
             self._list_seq += 1
             self._list_loads.append((self._list_seq, start[:7]))
+            self._list_requests[request] = self._list_seq
+
+    async def _read_open_orders(self, response: Response) -> None:
+        seq = self._list_requests.pop(response.request, None)
+        if seq is None:
+            return
+        try:
+            body = response.request.post_data_json
+            data = await response.json()
+        except (PlaywrightError, ValueError):
+            return
+        dates = _date_range(body) if isinstance(body, dict) else None
+        start = dates.get("startDate") if dates else None
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(start, str) or not isinstance(items, list):
+            return
+        times: list[dt.datetime] | None = []
+        for item in items:
+            if not isinstance(item, dict) or _taken(item):
+                continue
+            moment = start_time(item, self.tz)
+            if moment is None:
+                times = None
+                break
+            times.append(moment)
+        self._open_orders[start[:7]] = (seq, times)
+
+    async def open_order_times(self, month: tuple[int, int], mark: int) -> list[dt.datetime] | None:
+        reads, self._order_reads = self._order_reads, []
+        if reads:
+            await asyncio.gather(*reads, return_exceptions=True)
+        loaded = self._open_orders.get(f"{month[0]:04d}-{month[1]:02d}")
+        if loaded is None or loaded[0] <= mark:
+            return None
+        return loaded[1]
+
+    def remember_open_times(self, slots: Iterable[Slot], openings: Iterable[Opening]) -> None:
+        for slot in slots:
+            self.open_times.pop(slot, None)
+        for opening in openings:
+            if opening.clock is not None:
+                self.open_times.setdefault(opening.slot, set()).add(opening.clock)
+
+    async def job_times(self, day: dt.date, today: dt.date) -> list[dt.datetime] | None:
+        if self._page is None or self._schedule_request is None or self._api_headers is None:
+            return None
+        url, template = self._schedule_request
+        body = copy.deepcopy(template)
+        dates = _date_range(body)
+        dates["startDate"] = day.replace(day=1).isoformat()
+        dates["endDate"] = day.replace(day=calendar.monthrange(day.year, day.month)[1]).isoformat()
+        if "currentDate" in dates:
+            dates["currentDate"] = today.isoformat()
+        dates["date"] = day.isoformat()
+        parts = urlsplit(url)
+        details_url = urlunsplit(parts._replace(path=parts.path[: -len(self.sel.schedule_api)] + self.sel.job_details_api))
+        try:
+            response = await self._page.context.request.post(
+                details_url, headers=self._api_headers, data=json.dumps(body), timeout=10_000
+            )
+        except PlaywrightError:
+            return None
+        if response.status == 429:
+            raise SiteBusy("the site answered 429 Too Many Requests", retry_after=parse_retry_after(response.headers.get("retry-after")))
+        if not response.ok:
+            return None
+        try:
+            data = await response.json()
+        except (PlaywrightError, ValueError):
+            return None
+        result = data.get("result") if isinstance(data, dict) else None
+        if not isinstance(result, list):
+            return None
+        times = []
+        for item in result:
+            moment = start_time(item, self.tz) if isinstance(item, dict) else None
+            if moment is None:
+                return None
+            if moment.date() == day:
+                times.append(moment)
+        return sorted(times)
 
     def _on_request(self, request: Request) -> None:
         if request.method != "POST" or request.resource_type not in _WATCHED_TYPES:
@@ -155,13 +250,15 @@ class SiteSession:
             return
         if not (path.endswith(self.sel.counts_api) or path.endswith(self.sel.schedule_api)):
             return
-        if path.endswith(self.sel.counts_api):
-            try:
-                body = request.post_data_json
-            except (PlaywrightError, ValueError):
-                body = None
-            if isinstance(body, dict) and _date_range(body) is not None:
+        try:
+            body = request.post_data_json
+        except (PlaywrightError, ValueError):
+            body = None
+        if isinstance(body, dict) and _date_range(body) is not None:
+            if path.endswith(self.sel.counts_api):
                 self._count_request = (request.url, body)
+            else:
+                self._schedule_request = (request.url, body)
         asyncio.ensure_future(self._remember_headers(request))
 
     async def _remember_headers(self, request: Request) -> None:
@@ -212,6 +309,8 @@ class SiteSession:
         if response.request.resource_type not in _WATCHED_TYPES:
             return
         path = urlsplit(response.url).path
+        if response.ok and path.endswith(self.sel.open_list_api):
+            self._order_reads.append(asyncio.ensure_future(self._read_open_orders(response)))
         if response.ok and path.endswith(self.sel.counts_api):
             self._count_reads.append(asyncio.ensure_future(self._read_open_count(response)))
         if isinstance(self._problem, SiteBusy):

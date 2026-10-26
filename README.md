@@ -1,9 +1,9 @@
 # Elisa bot
 
 Watches the Elisa **Open Work Orders** calendar for the account owner. When a new
-opening appears, it accepts **one** work order in that half-day slot, unless the
-owner already has a job then. It then sends an email containing only the date
-and AM/PM.
+opening appears, it accepts it if the owner has fewer jobs that day than the
+maximum set on the page (3 by default) and it starts at least 3 hours from each of
+her other jobs that day. It then sends an email containing only the date and AM/PM.
 
 It does with the owner's own sign-in what the owner otherwise does by hand: sign
 in, open Open Work Orders, click **Available** to reload the calendar, look at this
@@ -162,6 +162,7 @@ shows:
 - the slots accepted recently (date and AM/PM only);
 - **Days off:** dates when the bot doesn't accept jobs (a date picker; past days drop
   off by themselves). Openings on those days are only reported, as "day off";
+- **Jobs per day:** the most jobs a day the bot will fill up to (1–4, default 3);
 - a **Send test alert** button.
 
 The page refreshes itself every minute, and can be saved to a phone's home screen: it
@@ -283,9 +284,18 @@ it again.
   emailing SOSi.
 - **Only new openings.** An opening is handled once, the first time it shows. If
   one appears while in test mode, switching to live later will not accept it.
-- **Never double-book:** slots where the owner already has an Applied, Assigned or
-  Confirmed job are skipped.
-- **One per slot:** if a slot has two openings, only one is accepted.
+- **Several jobs a day, never overlapping:** an opening is accepted only if the owner
+  has fewer jobs that day (Applied, Assigned or Confirmed, plus the bot's accepts in
+  this check) than **Jobs per day** on the page (1–4, default 3), and its start time
+  is at least `JOB_GAP_MINUTES` (180) from the start of every other job she has that
+  day, in Eastern time. Opening times come from the open-order list the page loads;
+  her job times from Elisa's job-details request (the one the page makes when a job
+  is clicked), made only when a new opening falls on a day she already has jobs.
+  Times are used in memory only: the state file, the log and emails hold date and
+  AM/PM. If her job times can't be loaded, the old rule applies: only a half-day
+  with no job, one per half-day. Skips are emailed as "less than 3 hours from another
+  job" or "already 3 jobs that day".
+- **Two openings, same start time:** only one is accepted (the second is too close).
 - **Daily cap** on Accept clicks (`MAX_APPLIES_PER_DAY`, default 10).
 - A clicked slot is never clicked again. A slot whose try failed *before* the click
   is retried on the next run (up to `MAX_ATTEMPTS_PER_SLOT`).

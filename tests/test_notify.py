@@ -207,3 +207,13 @@ def test_trouble_alert_says_why_and_holds_no_job_details():
 def test_an_opening_on_a_day_off_is_reported_as_a_day_off():
     message = cycle_message([], days_off=[S("2026-10-14 AM")])
     assert message == Message("Elisa: opening Wed Oct 14 AM (day off)", "Not accepted, marked as a day off: Wed Oct 14 AM.")
+
+
+def test_openings_too_close_or_on_a_full_day_are_reported_by_date_and_half():
+    message = cycle_message([], too_close=[S("2026-11-10 AM")], day_full=[S("2026-11-12 PM")], gap_hours=3, max_jobs=3)
+    assert message.subject == "Elisa: opening Tue Nov 10 AM (too close to another job)"
+    assert message.text == (
+        "Not accepted, less than 3 hours from another job: Tue Nov 10 AM. "
+        "Not accepted, already 3 jobs that day: Thu Nov 12 PM."
+    )
+    assert cycle_message([], day_full=[S("2026-11-12 PM")]).subject == "Elisa: opening Thu Nov 12 PM (day full)"

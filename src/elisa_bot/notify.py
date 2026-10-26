@@ -105,12 +105,18 @@ def cycle_message(
     skipped: Iterable[Slot] = (),
     include_missed: bool = True,
     days_off: Iterable[Slot] = (),
+    too_close: Iterable[Slot] = (),
+    day_full: Iterable[Slot] = (),
+    gap_hours: float = 3,
+    max_jobs: int = 3,
 ) -> Message | None:
     by_outcome = {outcome: [r.slot for r in results if r.outcome is outcome] for outcome in ApplyOutcome}
     if not include_missed:
         by_outcome[ApplyOutcome.MISSED] = []
     skipped = sorted(skipped)
     days_off = sorted(days_off)
+    too_close = sorted(too_close)
+    day_full = sorted(day_full)
 
     lines = []
     if by_outcome[ApplyOutcome.APPLIED]:
@@ -128,6 +134,10 @@ def cycle_message(
         lines.append(f"Opening seen but Accept could not be tried, will retry: {_labels(by_outcome[ApplyOutcome.ERROR])}.")
     if skipped:
         lines.append(f"Skipped, you already have a job then: {_labels(skipped)}.")
+    if too_close:
+        lines.append(f"Not accepted, less than {gap_hours:g} hours from another job: {_labels(too_close)}.")
+    if day_full:
+        lines.append(f"Not accepted, already {max_jobs} jobs that day: {_labels(day_full)}.")
     if days_off:
         lines.append(f"Not accepted, marked as a day off: {_labels(days_off)}.")
     if not lines:
@@ -142,6 +152,10 @@ def cycle_message(
             break
     if subject is None and skipped:
         subject = f"Elisa: opening {skipped[0].label()} (already booked)"
+    if subject is None and too_close:
+        subject = f"Elisa: opening {too_close[0].label()} (too close to another job)"
+    if subject is None and day_full:
+        subject = f"Elisa: opening {day_full[0].label()} (day full)"
     if subject is None:
         subject = f"Elisa: opening {days_off[0].label()} (day off)"
     return Message(subject, " ".join(lines))
