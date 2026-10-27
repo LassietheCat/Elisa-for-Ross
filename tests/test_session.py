@@ -87,37 +87,37 @@ async def test_sign_in_limit_stops_extra_sign_ins(mock, settings):
 OCT_1, DEC_31, TODAY = dt.date(2026, 10, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7)
 
 
-async def test_counts_open_work_orders_for_any_range_by_replaying_the_pages_own_request(mock, session):
-    assert await session.count_open(OCT_1, DEC_31, TODAY) is None
+async def test_lists_open_work_orders_for_any_range_by_replaying_the_pages_own_request(mock, session):
+    assert await session.open_orders(OCT_1, DEC_31, TODAY) is None
     mock.set_work_orders([
-        wo("2026-10-14", "AM", "available"),
-        wo("2026-11-03", "PM", "available"),
-        wo("2026-12-08", "AM", "available"),
+        wo("2026-10-14", "AM", "available", "09:30"),
+        wo("2026-11-03", "PM", "available", "13:00"),
+        wo("2026-12-08", "AM", "available", "10:00"),
         wo("2027-01-05", "AM", "available"),
         wo("2026-11-04", "AM", "assigned"),
     ])
     await session.ensure_ready()
     await asyncio.sleep(0.5)
     fetches = mock.stats()["calendar_fetches"]
-    assert await session.count_open(OCT_1, DEC_31, TODAY) == 3
-    assert await session.counts(OCT_1, DEC_31, TODAY) == {"new": 3, "applied": 0, "assigned": 1, "confirmed": 0}
-    assert await session.count_open(dt.date(2026, 11, 1), dt.date(2026, 11, 30), TODAY) == 1
+    orders = await session.open_orders(OCT_1, DEC_31, TODAY)
+    assert [f"{t:%Y-%m-%d %H:%M}" for t in orders] == ["2026-10-14 09:30", "2026-11-03 13:00", "2026-12-08 10:00"]
+    assert len(await session.open_orders(dt.date(2026, 11, 1), dt.date(2026, 11, 30), TODAY)) == 1
     assert mock.stats()["calendar_fetches"] == fetches
 
 
-async def test_a_refused_count_is_busy(mock, session):
+async def test_a_refused_list_is_busy(mock, session):
     await session.ensure_ready()
     await asyncio.sleep(0.5)
-    mock.configure(rate_limited_times=1)
+    mock.configure(list_rate_limited_times=1)
     with pytest.raises(SiteBusy):
-        await session.count_open(OCT_1, DEC_31, TODAY)
+        await session.open_orders(OCT_1, DEC_31, TODAY)
 
 
-async def test_a_signed_out_count_gives_no_answer(mock, session):
+async def test_a_signed_out_list_gives_no_answer(mock, session):
     await session.ensure_ready()
     await asyncio.sleep(0.5)
     mock.expire_sessions()
-    assert await session.count_open(OCT_1, DEC_31, TODAY) is None
+    assert await session.open_orders(OCT_1, DEC_31, TODAY) is None
 
 
 async def test_reads_the_start_times_of_the_owners_jobs_on_a_day(mock, session):

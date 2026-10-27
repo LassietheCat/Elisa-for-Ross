@@ -6,20 +6,19 @@ import datetime as dt
 import logging
 import time
 import urllib.request
-from collections import deque
+from collections import Counter
 from typing import Awaitable, Callable
 
 from playwright.async_api import Error as PlaywrightError
 
 from .config import Settings
 from .cycle import run_once, target_months
-from .models import JOB_STATUSES
 from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
 from .state import ControlStore, write_json
-from .timeutil import now_in, short_time, to_iso
+from .timeutil import now_in, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -74,15 +73,12 @@ class QuickCheck:
         self.answered_wall: str | None = None
         self.hot_months: list[tuple[int, int]] | None = None
         self.detected_at: float | None = None
-        self.jobs: dict[str, int] | None = None
-        self.jobs_day: dt.date | None = None
-        self.open_seen: dt.datetime | None = None
-        self.answering_since: dt.datetime | None = None
-        self.answers: deque[tuple[dt.datetime, int]] = deque(maxlen=3)
+        self.orders: Counter[dt.datetime | None] | None = None
         self.next_at: float | None = None
 
     def reset(self) -> None:
         self.known = None
+        self.orders = None
         self.paused = False
         self.misses = 0
         self.next_at = None
@@ -113,7 +109,7 @@ class QuickCheck:
         start = dt.date(months[0][0], months[0][1], 1)
         end = dt.date(last_year, last_month, calendar.monthrange(last_year, last_month)[1])
         try:
-            counts = await session.counts(start, end, today)
+            orders = await session.open_orders(start, end, today)
         except SiteBusy:
             self.paused = True
             self.refused_at = self.timer()
@@ -123,64 +119,30 @@ class QuickCheck:
                 "Quick check refused by the site (429); pausing until the next calendar read, then every %d s", self.every
             )
             return False
-        if counts is None:
+        if orders is None:
             self.misses += 1
             if self.misses == max(1, QUICK_SILENCE_S // max(1, self.every)):
                 log.warning("Quick checks got no answer from Elisa for %d s; relying on calendar reads", QUICK_SILENCE_S)
             return False
-        count = counts["new"]
         self.misses = 0
-        now = self.clock()
         self.answered_at = self.timer()
-        self.answered_wall = to_iso(now)
-        self.answering_since = self.answering_since or now
-        if count > 0:
-            self.open_seen = now
-        self._note_jobs(counts, today, now)
-        self.answers.append((now, count))
-        previous, self.known = self.known, count
+        self.answered_wall = to_iso(self.clock())
+        current = Counter(orders)
+        previous, self.orders, self.known = self.orders, current, len(orders)
         if previous is None:
-            log.info(
-                "Quick checks running: Elisa lists %d open work order(s) in the months checked, and %d booked job(s) from today",
-                count,
-                sum(self.jobs.values()),
-            )
-        elif count > previous:
-            self.detected_at = time.monotonic()
-            self.hot_months = await self._months_with_openings(session, months, today)
-            log.info(
-                "Elisa now lists %d open work order(s) in the months checked (was %d); reading %s now",
-                count,
-                previous,
-                ", ".join(f"{y}-{m:02d}" for y, m in self.hot_months) if self.hot_months else "all of them",
-            )
-            return True
-        return False
-
-    def _note_jobs(self, counts: dict[str, int], today: dt.date, now: dt.datetime) -> None:
-        jobs = {status: counts.get(status, 0) for status in JOB_STATUSES}
-        previous, previous_day = self.jobs, self.jobs_day
-        self.jobs, self.jobs_day = jobs, today
-        if previous is None or previous_day != today or sum(jobs.values()) == sum(previous.values()):
-            return
-        changes = ", ".join(
-            f"{status.capitalize()} {previous[status]}->{jobs[status]}"
-            for status in JOB_STATUSES
-            if jobs[status] != previous[status]
-        )
-        if self.open_seen is not None:
-            listed = f"open work orders last listed at {short_time(self.open_seen, now.date())}"
-        else:
-            listed = f"no open work order listed since {short_time(self.answering_since or now, now.date())}"
-        before = ", ".join(f"{short_time(at, now.date())} ({open_count} open)" for at, open_count in self.answers) or "none"
+            log.info("Quick checks running: Elisa lists %d open work order(s) in the months checked", len(orders))
+            return False
+        added = current - previous
+        if not added:
+            return False
+        self.detected_at = time.monotonic()
+        self.hot_months = None if None in added else sorted({(start.year, start.month) for start in added})
         log.info(
-            "Booked jobs in Elisa's count went from %d to %d (%s); %s; quick checks before it: %s",
-            sum(previous.values()),
-            sum(jobs.values()),
-            changes,
-            listed,
-            before,
+            "Elisa lists %d new open work order(s) in the months checked; reading %s now",
+            sum(added.values()),
+            ", ".join(f"{y}-{m:02d}" for y, m in self.hot_months) if self.hot_months else "all of them",
         )
+        return True
 
     def live(self, session: SiteSession) -> bool:
         ready, months = session.live.take_trigger()
@@ -188,17 +150,6 @@ class QuickCheck:
             return False
         self.hot_months, self.detected_at = months, None
         return True
-
-    async def _months_with_openings(
-        self, session: SiteSession, months: list[tuple[int, int]], today: dt.date
-    ) -> list[tuple[int, int]] | None:
-        ranges = [(dt.date(y, m, 1), dt.date(y, m, calendar.monthrange(y, m)[1])) for y, m in months]
-        counts = await asyncio.gather(
-            *(session.count_open(start, end, today) for start, end in ranges), return_exceptions=True
-        )
-        if any(not isinstance(c, int) for c in counts):
-            return None
-        return [month for month, c in zip(months, counts) if c > 0] or None
 
     def take_hot(self) -> tuple[list[tuple[int, int]] | None, float | None]:
         hot, detected = self.hot_months, self.detected_at
@@ -375,7 +326,6 @@ async def run_forever(
                     detected_at=detected_at,
                 )
                 quick.calendar_read()
-                session.live.saw_open(report.available)
                 heartbeat.healthy()
                 if report.signed_in:
                     status.signed_in_at = to_iso(clock())

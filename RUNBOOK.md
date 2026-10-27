@@ -9,7 +9,7 @@ safety rules are in [README.md](README.md); the client's summary is
 | | |
 |---|---|
 | Server | Henry's Contabo VPS `207.244.242.218` (Ubuntu 24.04.5, 12 vCPUs, 47 GB), installed Oct 14 by this runbook |
-| Bot | On since Oct 14, 19:13, quick check every 20 s and a calendar read every 60 s since Oct 18; **live** (`TEST_MODE=false`) since Oct 16, 13:54 (the previous settings are in `/etc/elisa-bot/env.before-live`) |
+| Bot | On since Oct 14, 19:13, a calendar read every 60 s since Oct 18, quick checks every 30 s since Oct 23 (the open-order list since Oct 26); **live** (`TEST_MODE=false`) since Oct 16, 13:54 (the previous settings are in `/etc/elisa-bot/env.before-live`) |
 | Alerts | From "Elisa Bot" <anya-alerts@agentmail.to> to Henry, Anya and Ross (`ALERT_EMAIL_TO`) |
 | Logins | `root` by SSH key from Ross's development machine; Henry's root password (to be changed, since it was sent by message) |
 | On/off page | `https://anya-elisa.duckdns.org` (DuckDNS name made by Ross; Caddy with a Let's Encrypt certificate and HSTS, in front of 127.0.0.1:8080) |
@@ -134,8 +134,8 @@ The bot starts **off**. Wait two minutes after `site-check` (signing in is a bur
 requests), then press **ON** on the page, or run `elisa-bot on` if the page has no
 address yet. `journalctl -u elisa-bot -f` should show "Signed in to Elisa", then one
 "Checked 2026-10: … (first look, recorded only)" line per month, then a calendar read every
-60 s, with quick checks every 20 s in between. They log "Quick checks running" once, then only
-when the count goes up or Elisa refuses one.
+60 s, with quick checks every 30 s in between. They log "Quick checks running" once, then only
+when Elisa lists a new open work order or refuses one.
 
 ## Day to day
 
@@ -149,11 +149,9 @@ when the count goes up or Elisa refuses one.
 - **Test alert:** the page's **Send test alert** button, or `elisa-bot test-email`. Both
   go to every recipient.
 - **Logs:** `journalctl -u elisa-bot --since today`; also `/var/lib/elisa-bot/data/logs/`.
-- **New jobs on the calendar:** `journalctl -u elisa-bot | grep -E "on the calendar|Booked jobs"`
-  lists every new, removed or changed job (date and AM/PM), with times. "Booked jobs"
-  lines come from the quick checks (within 20 s) and say when Elisa last listed an open
-  work order; "on the calendar" lines come from the calendar reads (within about
-  3 minutes) and name the half-day.
+- **New jobs on the calendar:** `journalctl -u elisa-bot | grep "on the calendar"` lists
+  every new, removed or changed job (date and AM/PM), with times, from the calendar
+  reads (within about 3 minutes).
 - **Live channel:** `journalctl -u elisa-bot | grep "Live channel"` shows the websocket
   connecting after each sign-in, the page joining its work-order rooms, each order
   assigned to someone (and whether the bot had seen it open), and any other event,

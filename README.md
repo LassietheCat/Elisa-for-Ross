@@ -58,17 +58,19 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
 **off**. Every second it looks at the switch (`data/control.json`):
 
 - **On:** it signs in once and keeps that session.
-  - **Quick check, every `QUICK_CHECK_SECONDS` (20):** it asks Elisa how many open
-    work orders there are in all the months it checks, in one small request: the
-    count request the calendar page itself makes, replayed with the bot's date range.
-    When that number goes up, it asks for each month's count (three small requests
-    at once) and opens only the months that have openings, then accepts. Openings
-    are often taken within a minute, so this is what makes the bot fast.
+  - **Quick check, every `QUICK_CHECK_SECONDS` (30):** it asks Elisa for the open work
+    orders in all the months it checks, in one request: the open-order list request the
+    calendar page itself makes, replayed with the bot's date range. When an order is
+    listed that wasn't in the previous answer, the bot reads that order's month at once
+    and accepts it under the usual rules. Openings are often taken within 1–3 minutes,
+    so this is what makes the bot fast. The answer holds job details; the bot keeps only
+    each order's start time, in memory. (Elisa's count request, used until Oct 26, always
+    answers 0 open orders for an interpreter account, so it found nothing.)
   - **Calendar read, every `POLL_SECONDS` (60 by default, never below
     `MIN_POLL_SECONDS`, 15):** it reads one month, sweeping one month at a time
     (Oct → Nov → Dec → Dec → Nov → Oct → Oct …). This keeps the page and the sign-in
-    fresh, gives the quick check its request to replay, and catches anything the count
-    misses. The page keeps each month's open work orders once it has loaded them, and
+    fresh, gives the quick check its request to replay, and catches anything the quick
+    check misses. The page keeps each month's open work orders once it has loaded them, and
     moving between months reuses that list; only the **Available** button loads it
     again. The bot watches the page's own list requests and clicks Available whenever
     the month it is about to read wasn't loaded during this check, so every read is
@@ -84,8 +86,8 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     being assigned to someone (`coi_assigned`) is only logged, saying whether the bot
     had seen it open. Any other event makes the bot read that month at once (at most
     one such read every 10 s, and no more than 30 per event name an hour).
-  - Elisa limits how many requests an account can make, and its count request more
-    strictly: quick checks every 10 s drew refusals within minutes, every 20 s none.
+  - Elisa limits how many requests an account can make: count requests every 10 s drew
+    refusals within minutes, and every 20 s about twice an hour.
     When a quick check is refused, quick checks pause until the next calendar read and
     then run half as often (down to every 2 minutes); after 30 minutes without a
     refusal they step back up (halving the interval, never below `QUICK_CHECK_SECONDS`), one step per calm half hour. They keep their own schedule across
@@ -106,11 +108,7 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   date and AM/PM, outcome). If a quick check sees a new opening but it's gone by the
   time the calendar loads, that's recorded as "gone": taken before the bot could read it.
 - **Job watch:** the bot logs every change to the owner's jobs, by date and AM/PM only,
-  to show when and how new jobs arrive. Each quick-check answer already includes Elisa's
-  count of the owner's Applied, Assigned and Confirmed jobs from today on; when that
-  total changes, the bot logs it with the last time Elisa listed an open work order
-  and the times of the three quick checks before it.
-  Each calendar read compares the month with its previous read and logs lines such as
+  to show when and how new jobs arrive. Each calendar read compares the month with its previous read and logs lines such as
   "New job on the calendar: Thu Oct 29 PM, now 1 Assigned (was none at 14:28:41)", or
   "Job gone" / "Job changed". The previous read of each month is kept in
   `data/state.json`. This adds no requests.

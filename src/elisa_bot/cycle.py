@@ -136,6 +136,7 @@ async def run_once(
                     )
             reading = await reader.read_displayed_month()
             session.raise_for_problems()
+            session.live.saw_open(reading.available())
             missed += await _warn_about_missed_tags(session, reading)
             _note_job_changes(state, reading, clock())
             baseline = month_key((year, month_number)) in state.baseline_pending

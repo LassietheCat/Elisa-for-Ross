@@ -97,7 +97,7 @@ class SiteSession:
         self._open_counts: list[int] = []
         self._count_reads: list[asyncio.Future] = []
         self._warned: set[tuple] = set()
-        self._count_request: tuple[str, dict] | None = None
+        self._list_request: tuple[str, dict] | None = None
         self._api_headers: dict[str, str] | None = None
         self._list_seq = 0
         self._list_loads: deque[tuple[int, str]] = deque(maxlen=50)
@@ -160,6 +160,7 @@ class SiteSession:
             self._list_seq += 1
             self._list_loads.append((self._list_seq, start[:7]))
             self._list_requests[request] = self._list_seq
+            self._list_request = (request.url, body)
 
     async def _read_open_orders(self, response: Response) -> None:
         seq = self._list_requests.pop(response.request, None)
@@ -247,18 +248,15 @@ class SiteSession:
         path = urlsplit(request.url).path
         if path.endswith(self.sel.open_list_api):
             self._note_list_load(request)
-            return
-        if not (path.endswith(self.sel.counts_api) or path.endswith(self.sel.schedule_api)):
-            return
-        try:
-            body = request.post_data_json
-        except (PlaywrightError, ValueError):
-            body = None
-        if isinstance(body, dict) and _date_range(body) is not None:
-            if path.endswith(self.sel.counts_api):
-                self._count_request = (request.url, body)
-            else:
+        elif path.endswith(self.sel.schedule_api):
+            try:
+                body = request.post_data_json
+            except (PlaywrightError, ValueError):
+                body = None
+            if isinstance(body, dict) and _date_range(body) is not None:
                 self._schedule_request = (request.url, body)
+        elif not path.endswith(self.sel.counts_api):
+            return
         asyncio.ensure_future(self._remember_headers(request))
 
     async def _remember_headers(self, request: Request) -> None:
@@ -270,14 +268,10 @@ class SiteSession:
             name: value for name, value in headers.items() if not name.startswith(":") and name.lower() not in _NOT_REPLAYED
         }
 
-    async def count_open(self, start: dt.date, end: dt.date, today: dt.date) -> int | None:
-        counts = await self.counts(start, end, today)
-        return None if counts is None else counts["new"]
-
-    async def counts(self, start: dt.date, end: dt.date, today: dt.date) -> dict[str, int] | None:
-        if self._page is None or self._count_request is None or self._api_headers is None:
+    async def open_orders(self, start: dt.date, end: dt.date, today: dt.date) -> list[dt.datetime | None] | None:
+        if self._page is None or self._list_request is None or self._api_headers is None:
             return None
-        url, template = self._count_request
+        url, template = self._list_request
         body = copy.deepcopy(template)
         dates = _date_range(body)
         dates["startDate"], dates["endDate"] = start.isoformat(), end.isoformat()
@@ -300,10 +294,10 @@ class SiteSession:
             data = await response.json()
         except (PlaywrightError, ValueError):
             return None
-        counts = data.get("responseCount") if isinstance(data, dict) else None
-        if not isinstance(counts, dict) or type(counts.get("new")) is not int:
+        items = data.get("data") if isinstance(data, dict) else None
+        if not isinstance(items, list):
             return None
-        return {name: value for name, value in counts.items() if type(value) is int}
+        return [start_time(item, self.tz) for item in items if isinstance(item, dict) and not _taken(item)]
 
     def _on_response(self, response: Response) -> None:
         if response.request.resource_type not in _WATCHED_TYPES:

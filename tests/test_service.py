@@ -394,33 +394,38 @@ async def test_openings_already_listed_in_any_month_are_only_recorded(mock, tmp_
         await asyncio.wait_for(task, 30)
 
 
-class CountingSession:
+class ListingSession:
     def __init__(self, *answers):
         self.answers = list(answers)
         self.ranges = []
 
-    async def count_open(self, start, end, today):
-        counts = await self.counts(start, end, today)
-        return None if counts is None else counts["new"]
-
-    async def counts(self, start, end, today):
+    async def open_orders(self, start, end, today):
         self.ranges.append((start, end, today))
         value = self.answers.pop(0)
         if isinstance(value, Exception):
             raise value
-        return {"new": value} if isinstance(value, int) else value
+        return value
 
 
-async def test_quick_check_reads_the_calendar_only_when_elisas_count_goes_up(tmp_path):
+def at(text: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(text).replace(tzinfo=ZoneInfo("America/New_York"))
+
+
+A, B, C = at("2026-10-14T09:30"), at("2026-11-03T13:00"), at("2026-12-08T10:00")
+
+
+async def test_quick_check_reads_the_calendar_only_when_a_new_order_is_listed(tmp_path):
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
-    session = CountingSession(0, 0, 1, 0, 1, 0, 1, None, 0, 2, 1, 0, 1)
-    assert [await quick.check(session) for _ in range(7)] == [False, False, True, False, False, False, True]
+    session = ListingSession([], [], [A], [A], [], [B], None, [B], [B, C], [C], [C, C])
+    results = [await quick.check(session) for _ in range(11)]
+    assert results == [False, False, True, False, False, True, False, False, True, False, True]
     assert session.ranges[0] == (dt.date(2026, 10, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7))
+    assert quick.known == 2
 
 
 async def test_a_refused_quick_check_pauses_until_the_next_calendar_read(tmp_path):
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
-    session = CountingSession(SiteBusy("the site answered 429 Too Many Requests"), 0, 1)
+    session = ListingSession(SiteBusy("the site answered 429 Too Many Requests"), [], [A])
     assert await quick.check(session) is False and quick.paused
     assert await quick.check(session) is False and len(session.ranges) == 1
     quick.calendar_read()
@@ -431,7 +436,7 @@ async def test_refusals_slow_quick_checks_down_until_a_calm_half_hour(tmp_path):
     now = [0.0]
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now, timer=lambda: now[0])
     busy = SiteBusy("the site answered 429 Too Many Requests")
-    session = CountingSession(busy, busy, busy, busy, 0, 0, 0, 0, 0)
+    session = ListingSession(busy, busy, busy, busy, [], [], [], [], [])
     everies = []
     for _ in range(4):
         await quick.check(session)
@@ -535,45 +540,11 @@ async def test_a_quick_check_slower_than_the_calendar_reads_still_runs(tmp_path)
 async def test_quick_checks_say_once_when_they_start_and_once_when_they_get_no_answer(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
-    session = CountingSession(*([None] * 31), 0, 0)
+    session = ListingSession(*([None] * 31), [], [])
     for _ in range(33):
         await quick.check(session)
     assert caplog.text.count("Quick checks got no answer from Elisa for 300 s") == 1
     assert caplog.text.count("Quick checks running: Elisa lists 0 open work order(s)") == 1
-
-
-async def test_quick_checks_log_changes_in_elisas_count_of_booked_jobs(tmp_path, caplog):
-    caplog.set_level(logging.INFO)
-    clock = [FIXED_NOW]
-    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), lambda: clock[0])
-
-    def counts(new, applied, assigned, confirmed):
-        return {"new": new, "applied": applied, "assigned": assigned, "confirmed": confirmed}
-
-    session = CountingSession(
-        counts(0, 0, 10, 1),
-        counts(0, 0, 9, 2),
-        counts(0, 1, 9, 2),
-        counts(1, 1, 9, 2), 0, 1, 0,
-        counts(0, 1, 10, 2),
-        counts(0, 0, 8, 1),
-        counts(0, 0, 7, 1),
-    )
-    moments = [FIXED_NOW + dt.timedelta(seconds=20 * i) for i in range(5)]
-    moments += [FIXED_NOW + dt.timedelta(days=1), FIXED_NOW + dt.timedelta(days=1, seconds=20)]
-    results = []
-    for moment in moments:
-        clock[0] = moment
-        results.append(await quick.check(session))
-    assert results == [False, False, False, True, False, False, False]
-    assert [r.getMessage() for r in caplog.records if r.getMessage().startswith("Booked jobs")] == [
-        "Booked jobs in Elisa's count went from 11 to 12 (Applied 0->1); no open work order listed since 10:00:00; "
-        "quick checks before it: 10:00:00 (0 open), 10:00:20 (0 open)",
-        "Booked jobs in Elisa's count went from 12 to 13 (Assigned 9->10); open work orders last listed at 10:01:00; "
-        "quick checks before it: 10:00:20 (0 open), 10:00:40 (0 open), 10:01:00 (1 open)",
-        "Booked jobs in Elisa's count went from 9 to 8 (Assigned 8->7); open work orders last listed at Oct 7 10:01:00; "
-        "quick checks before it: Oct 7 10:01:00 (1 open), Oct 7 10:01:20 (0 open), 10:00:00 (0 open)",
-    ]
 
 
 @pytest.mark.browser
@@ -623,19 +594,16 @@ async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not
     assert len(sent) == 3
 
 
-async def test_a_rising_count_names_the_months_that_have_openings(tmp_path):
+async def test_a_new_order_names_its_month_and_one_without_a_time_means_all_months(tmp_path):
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
-    session = CountingSession(0, 1, 0, 0, 1)
+    session = ListingSession([A], [A, C], [A, C, None])
     assert await quick.check(session) is False
     assert await quick.check(session) is True
     hot, detected_at = quick.take_hot()
     assert hot == [(2026, 12)] and detected_at is not None
-    assert session.ranges[2:] == [
-        (dt.date(2026, 10, 1), dt.date(2026, 10, 31), dt.date(2026, 10, 7)),
-        (dt.date(2026, 11, 1), dt.date(2026, 11, 30), dt.date(2026, 10, 7)),
-        (dt.date(2026, 12, 1), dt.date(2026, 12, 31), dt.date(2026, 10, 7)),
-    ]
     assert quick.take_hot() == (None, None)
+    assert await quick.check(session) is True
+    assert quick.take_hot()[0] is None
 
 
 @pytest.mark.browser

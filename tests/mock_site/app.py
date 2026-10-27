@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
     "schedule_error_times": 0,
     "schedule_error_after": 0,
     "count_extra_new": 0,
+    "list_rate_limited_times": 0,
 }
 
 
@@ -179,6 +180,9 @@ def create_app(state: MockState) -> FastAPI:
             return unauthorized()
         start, end = in_range(await request.json(), "filterBy")
         with state.lock:
+            if state.config["list_rate_limited_times"] > 0:
+                state.config["list_rate_limited_times"] -= 1
+                return JSONResponse({"message": "Too Many Requests"}, status_code=429)
             state.stats["open_list_loads"].append(start[:7])
             data = [order_item(wo) for wo in state.work_orders if wo["status"] == "available" and start <= wo["date"] <= end]
         return {"status": True, "data": data, "icLangs": ["MOCK"] if data else []}
