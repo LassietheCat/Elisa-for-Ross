@@ -107,6 +107,7 @@ class Settings:
     max_applies_per_day: int = 10
     max_attempts_per_slot: int = 2
     job_gap_minutes: int = 180
+    min_notice_minutes: int = 0
     months_to_check: int = 3
 
     poll_seconds: int = 60
@@ -182,6 +183,7 @@ class Settings:
             max_applies_per_day=e.integer("MAX_APPLIES_PER_DAY", 10, lo=0),
             max_attempts_per_slot=e.integer("MAX_ATTEMPTS_PER_SLOT", 2, lo=1),
             job_gap_minutes=e.integer("JOB_GAP_MINUTES", 180, lo=0, hi=720),
+            min_notice_minutes=e.integer("MIN_NOTICE_MINUTES", 0, lo=0, hi=2880),
             months_to_check=e.integer("MONTHS_TO_CHECK", 3, lo=1, hi=6),
             poll_seconds=poll,
             min_poll_seconds=min_poll,

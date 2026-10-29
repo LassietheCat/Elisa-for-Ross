@@ -37,6 +37,12 @@ JOB_STATUSES = ("applied", "assigned", "confirmed")
 
 
 @dataclass(frozen=True)
+class OpenOrders:
+    starts: tuple[dt.datetime, ...] = ()
+    untimed_days: frozenset[dt.date] = frozenset()
+
+
+@dataclass(frozen=True)
 class Opening:
     slot: Slot
     start: dt.datetime | None = None
@@ -81,6 +87,7 @@ class ApplyOutcome(str, Enum):
     APPLIED = "applied"
     UNVERIFIED = "unverified"
     MISSED = "missed"
+    REFUSED = "refused"
     ERROR = "error"
     TEST_MODE = "test_mode"
 

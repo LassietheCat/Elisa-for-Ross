@@ -174,20 +174,19 @@ function openPart(data) {
   const open = {};
   for (const [iso, halves] of Object.entries(data.cells)) {
     for (const [half, counts] of Object.entries(halves)) {
-      if (counts.available) { open[iso] = open[iso] || {}; open[iso][half] = counts.available; }
+      if (counts.available) { open[iso] = open[iso] || {}; open[iso][half] = {available: counts.available, courts: counts.courts}; }
     }
   }
   return open;
 }
 function keepOpen(data, open) {
   for (const halves of Object.values(data.cells)) {
-    for (const counts of Object.values(halves)) delete counts.available;
+    for (const counts of Object.values(halves)) { delete counts.available; delete counts.courts; }
   }
   for (const [iso, halves] of Object.entries(open)) {
     data.cells[iso] = data.cells[iso] || {};
-    for (const [half, count] of Object.entries(halves)) {
-      data.cells[iso][half] = data.cells[iso][half] || {};
-      data.cells[iso][half].available = count;
+    for (const [half, part] of Object.entries(halves)) {
+      data.cells[iso][half] = Object.assign(data.cells[iso][half] || {}, part);
     }
   }
 }
@@ -198,8 +197,9 @@ function connectLive() {
 }
 function tags(iso, half, data) {
   const counts = (data.cells[iso] || {})[half] || {};
-  const open = counts.available ? `<div class="ng-scope"><div class="calender-day-box" data-slot="${iso} ${half}" style="background-color: rgb(91, 155, 213); color: rgb(255, 255, 255);">
-      <span class="badge badge-primary calender-cell-badge">${counts.available}</span> <span style="line-height: 25px;">MOCK1</span></div></div>` : '';
+  const courts = counts.courts || (counts.available ? {MOCK1: counts.available} : {});
+  const open = Object.keys(courts).sort().map(court => `<div class="ng-scope"><div class="calender-day-box" data-slot="${iso} ${half}" data-court="${court}" style="background-color: rgb(91, 155, 213); color: rgb(255, 255, 255);">
+      <span class="badge badge-primary calender-cell-badge">${courts[court]}</span> <span style="line-height: 25px;">${court}</span></div></div>`).join('');
   return open + ['applied', 'assigned', 'confirmed', 'cancelled'].filter(s => counts[s]).map(s =>
     `<div class="ng-scope"><span class="badge ${WORDS[s][1]} ng-binding" data-slot="${iso} ${half}" data-status="${s}">${counts[s]} ${WORDS[s][0]}</span></div>`
   ).join('');
@@ -272,7 +272,7 @@ connectLive();
 
 body.addEventListener('click', e => {
   const box = e.target.closest('.calender-day-box');
-  if (box) openWorkOrders(box.dataset.slot);
+  if (box) openWorkOrders(box.dataset.slot, box.dataset.court);
 });
 function modal(id, inner) {
   const m = document.createElement('div');
@@ -283,8 +283,8 @@ function modal(id, inner) {
   document.body.appendChild(m);
   return m;
 }
-async function openWorkOrders(slot) {
-  const res = await api(`/api/mock/details?slot=${encodeURIComponent(slot)}`);
+async function openWorkOrders(slot, court) {
+  const res = await api(`/api/mock/details?slot=${encodeURIComponent(slot)}&court=${encodeURIComponent(court || '')}`);
   const data = await res.json();
   if (data.style === 'panel') { showPanel(data); return; }
   const cards = data.work_orders.map(w => `<div class="wo-card">
@@ -319,7 +319,7 @@ async function accept(id, details, needConfirm) {
 function showPanel(data) {
   const panel = document.getElementById('wo-panel');
   const rows = data.work_orders.map(w => `<div class="lang-list" ng-repeat="item in items | selection"><div class="d-flex justify-spac-between">
-      <span>${w.court} | </span><span>${w.language} | </span><span><b>${w.time}</b></span>
+      <span>${w.court} | </span><span>${w.sertype} | </span><span><b>${w.time}</b></span>
       ${data.button_label ? `<button class="btn_ btn-xs btn-primary border-solid" ng-click="onAccept(item)" data-id="${w.id}"><span>${data.button_label}</span></button>` : ''}
     </div></div>`).join('');
   panel.innerHTML = `<div class="scheduled"><div class="panel-collapse" role="tabpanel">${rows || '<span>No Scheduled WOs.</span>'}</div></div>`;

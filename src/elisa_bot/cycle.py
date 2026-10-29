@@ -4,7 +4,7 @@ import datetime as dt
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import AbstractSet, Callable
 
 from .config import Settings
 from .detect import jobs_per_day, new_openings, openings_in, plan_month
@@ -26,6 +26,7 @@ Clock = Callable[[], dt.datetime]
 @dataclass
 class CycleReport:
     available: set[Slot] = field(default_factory=set)
+    badges: set[Slot] = field(default_factory=set)
     new: set[Slot] = field(default_factory=set)
     baseline_only: bool = False
     results: list[ApplyResult] = field(default_factory=list)
@@ -33,6 +34,7 @@ class CycleReport:
     skipped_day_off: list[Slot] = field(default_factory=list)
     skipped_too_close: list[Slot] = field(default_factory=list)
     skipped_day_full: list[Slot] = field(default_factory=list)
+    skipped_too_soon: list[Slot] = field(default_factory=list)
     notified: bool = False
     months_read: list[tuple[int, int]] = field(default_factory=list)
     signed_in: bool = False
@@ -105,7 +107,7 @@ async def run_once(
         if key not in state.baseline_pending and (state.watched_through is None or key > state.watched_through)
     ]
     control = ControlStore(settings).load()
-    days_off = control.days_off_dates()
+    days_off = control.days_off_slots()
     report = CycleReport()
     baselines: list[bool] = []
     missed: list[str] = []
@@ -114,9 +116,10 @@ async def run_once(
             await session.start()
         session.clear_problems()
         loaded_mark = session.list_mark()
+        session.service_types = control.wanted_types()
         report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
-        applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode)
+        applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode, service_types=session.service_types)
         shown = await _shown_month(reader, session)
         if month is None:
             targets = [m for m in window if only and m in only] or list(window)
@@ -140,13 +143,19 @@ async def run_once(
             missed += await _warn_about_missed_tags(session, reading)
             _note_job_changes(state, reading, clock())
             baseline = month_key((year, month_number)) in state.baseline_pending
-            openings = openings_in(reading.slots, await session.open_order_times((year, month_number), loaded_mark))
+            orders = await session.open_order_times((year, month_number), loaded_mark)
+            if orders is None:
+                openings = []
+                missed += _unread_list(session, reading)
+            else:
+                openings = openings_in(reading.slots, orders)
             job_times = {} if baseline else await _job_times(session, reading, openings, state, today, days_off)
             plan = plan_month(
                 reading.slots,
                 state,
                 today=today,
                 settings=settings,
+                now=clock(),
                 openings=openings,
                 known=session.open_times,
                 clicked=session.clicked,
@@ -156,7 +165,8 @@ async def run_once(
                 baseline=baseline,
                 days_off=days_off,
             )
-            session.remember_open_times(reading.slots, openings)
+            session.remember_open_times(reading.slots, openings, listed=orders is not None)
+            report.badges |= {slot for slot, tags in reading.slots.items() if tags.available > 0}
             report.months_read.append((year, month_number))
             report.open_count += sum(tags.available for tags in reading.slots.values())
             baselines.append(plan.baseline_only)
@@ -166,11 +176,13 @@ async def run_once(
             report.skipped_day_off += plan.skipped_day_off
             report.skipped_too_close += plan.skipped_too_close
             report.skipped_day_full += plan.skipped_day_full
+            report.skipped_too_soon += plan.skipped_too_soon
             for outcome, slots in (
                 ("skipped", plan.skipped_booked),
                 ("day off", plan.skipped_day_off),
                 ("too close", plan.skipped_too_close),
                 ("day full", plan.skipped_day_full),
+                ("too soon", plan.skipped_too_soon),
             ):
                 for slot in slots:
                     state.add_activity(to_iso(clock()), str(slot), outcome, _since(detected_at))
@@ -217,7 +229,7 @@ async def run_once(
     read_keys = {month_key(m) for m in report.months_read}
     other_months = {month_key(m) for m in window} - read_keys
     kept = {slot for slot in state.seen_slots() if month_key((slot.date.year, slot.date.month)) in other_months}
-    state.seen = sorted(str(slot) for slot in kept | (report.available - retry))
+    state.seen = sorted(str(slot) for slot in kept | (report.badges - retry))
     state.baseline_pending = [key for key in state.baseline_pending if key in other_months]
     state.baseline_done = not state.baseline_pending
     if read_keys:
@@ -249,6 +261,7 @@ async def run_once(
         report.skipped_too_close,
         report.skipped_day_full,
         control.max_jobs_per_day,
+        report.skipped_too_soon,
     )
     return report
 
@@ -259,14 +272,14 @@ async def _job_times(
     openings: list[Opening],
     state: BotState,
     today: dt.date,
-    days_off: set[dt.date],
+    days_off: AbstractSet[Slot],
 ) -> dict[dt.date, list[dt.datetime] | None]:
     jobs = jobs_per_day(reading.slots)
     days = sorted(
         {
             opening.slot.date
             for opening in new_openings(openings, state, session.open_times)
-            if opening.slot.date >= today and opening.slot.date not in days_off
+            if opening.slot.date >= today and opening.slot not in days_off
         }
     )
     return {day: (await session.job_times(day, today)) if jobs[day] else [] for day in days}
@@ -313,6 +326,16 @@ def _describe_jobs(jobs: dict[str, int]) -> str:
     return ", ".join(f"{count} {status.capitalize()}" for status, count in jobs.items()) or "none"
 
 
+def _unread_list(session: SiteSession, reading: MonthReading) -> list[str]:
+    if not any(tags.available for tags in reading.slots.values()):
+        return []
+    key = month_key((reading.year, reading.month))
+    if not session.warn_once(("unread list", key), "%s: Elisa's open-order list couldn't be read; nothing accepted from this read", key):
+        return []
+    month_name = dt.date(reading.year, reading.month, 1).strftime("%B %Y")
+    return [f"{month_name}: Elisa's open-order list couldn't be read, so the bot didn't accept anything from it."]
+
+
 async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -> list[str]:
     key = month_key((reading.year, reading.month))
     month_name = dt.date(reading.year, reading.month, 1).strftime("%B %Y")
@@ -324,18 +347,6 @@ async def _warn_about_missed_tags(session: SiteSession, reading: MonthReading) -
     for day, count in sorted(reading.unread.items()):
         if session.warn_once(("unread", day, count), "%s: %d calendar tag(s) the bot couldn't read", day, count):
             problems.append(f"{day:%a %b} {day.day}: {count} calendar tag(s) the bot couldn't read.")
-    site_open = await session.site_open_count()
-    shown = sum(tags.available for tags in reading.slots.values())
-    if site_open is not None and site_open != shown:
-        newly = session.warn_once(
-            ("open count", key, site_open, shown),
-            "%s: Elisa's own count shows %d open work order(s), the calendar shows %d",
-            key,
-            site_open,
-            shown,
-        )
-        if newly and site_open > shown:
-            problems.append(f"{month_name}: Elisa lists {site_open} open work order(s), but the bot saw {shown} on the calendar.")
     return problems
 
 
@@ -348,6 +359,7 @@ async def _notify(
     too_close: list[Slot] = (),
     day_full: list[Slot] = (),
     max_jobs: int = 3,
+    too_soon: list[Slot] = (),
 ) -> bool:
     message = cycle_message(
         results,
@@ -356,8 +368,10 @@ async def _notify(
         days_off=days_off if settings.notify_skipped else (),
         too_close=too_close if settings.notify_skipped else (),
         day_full=day_full if settings.notify_skipped else (),
+        too_soon=too_soon if settings.notify_skipped else (),
         gap_hours=settings.job_gap_minutes / 60,
         max_jobs=max_jobs,
+        notice_hours=settings.min_notice_minutes / 60,
     )
     if message is None:
         return False

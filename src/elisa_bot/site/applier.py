@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 from urllib.parse import urlsplit
@@ -16,21 +17,50 @@ from .selectors import Selectors
 log = logging.getLogger(__name__)
 
 ACCEPT_ANSWER_S = 10
+MAX_TRIES = 3
 _SEEN_ATTR = "data-elisa-bot-seen"
 _SAME_WINDOW_JS = "(el, other) => el === other || el.contains(other) || other.contains(el)"
-_ROW_CLOCK_JS = r"""(el, row) => {
+_ROW_JS = r"""(el, row) => {
   const box = el.closest(row) || el.parentElement;
-  const m = (box ? box.innerText : '').match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-  return m ? `${m[1].padStart(2, '0')}:${m[2]} ${m[3].toUpperCase()}` : null;
+  const text = box ? box.innerText : '';
+  const m = text.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  const types = Array.from(new Set((text.match(/\b(VRI|OPI|OSI)\b/gi) || []).map(t => t.toUpperCase())));
+  return { clock: m ? `${m[1].padStart(2, '0')}:${m[2]} ${m[3].toUpperCase()}` : null, types };
 }"""
+_TYPES_RE = re.compile(r"\b(VRI|OPI|OSI)\b", re.I)
+
+
+_GENERIC_WORDS = frozenset(
+    "a about accept accepted acceptance after again already an and any apply applied are as assigned assignment at "
+    "available be been by cannot can't coi completed conflict conflicting could date do does exceeded for found has "
+    "have in interpreter invalid is it limit longer maximum no not of on or order please process processed refresh "
+    "request schedule scheduled screen sorry the this time to try unable was with work wo you your".split()
+)
+
+
+def describe_refusal(message: str) -> str:
+    words = re.findall(r"[A-Za-z']+|[^A-Za-z'\s]+", message)
+    kept = [word.lower() if word.lower() in _GENERIC_WORDS else "…" for word in words if re.match(r"[A-Za-z']", word)]
+    text = re.sub(r"(… )+…|…( …)+", "…", " ".join(kept))
+    digest = hashlib.sha256(message.encode("utf-8")).hexdigest()[:8]
+    return f"{text or 'no reason given'} [{len(message)} chars, #{digest}]"
 
 
 class Applier:
-    def __init__(self, page: Page, selectors: Selectors, reader: CalendarReader, *, test_mode: bool):
+    def __init__(
+        self,
+        page: Page,
+        selectors: Selectors,
+        reader: CalendarReader,
+        *,
+        test_mode: bool,
+        service_types: frozenset[str] | None = None,
+    ):
         self.page = page
         self.sel = selectors
         self.reader = reader
         self.test_mode = test_mode
+        self.service_types = service_types
         self._accept_re = re.compile(selectors.accept_button_re, re.I)
         self._confirm_re = re.compile(selectors.confirm_button_re, re.I)
         self._close_re = re.compile(selectors.close_button_re, re.I)
@@ -41,34 +71,68 @@ class Applier:
     async def apply_one(self, target: Opening | Slot) -> ApplyResult:
         opening = target if isinstance(target, Opening) else Opening(target)
         slot = opening.slot
+        last: ApplyResult | None = None
+        tries = 0
+        index = 0
+        while tries < MAX_TRIES:
+            try:
+                tags = await self.reader.find_available_tags(slot)
+                if index >= len(tags):
+                    break
+                if index == 0:
+                    await self._mark_current_messages()
+                tag = tags[index]
+                await tag.evaluate("el => el.scrollIntoView({block: 'center'})")
+                await tag.click()
+                buttons, window = await self._wait_for_accepts(opening.clock)
+            except SiteError as exc:
+                return ApplyResult(slot, ApplyOutcome.ERROR, exc.code)
+            except PlaywrightError as exc:
+                log.warning("Could not open the opening for %s (%s)", slot, type(exc).__name__)
+                await self._close_windows_quietly()
+                return ApplyResult(slot, ApplyOutcome.ERROR, "open_failed")
+            if window is not None:
+                return await self._apply_in_window(slot, window)
+            index += 1
+            if not buttons:
+                continue
+            if self.test_mode:
+                return ApplyResult(slot, ApplyOutcome.TEST_MODE, "found_accept_button")
+            for button in buttons:
+                result = await self._accept_from_list(slot, button)
+                tries += 1
+                if result.outcome not in (ApplyOutcome.REFUSED, ApplyOutcome.MISSED) or tries >= MAX_TRIES:
+                    return result
+                last = result
+        if last is not None:
+            return last
+        if index == 0:
+            return ApplyResult(slot, ApplyOutcome.MISSED, "gone")
+        return ApplyResult(slot, ApplyOutcome.ERROR, "no_accept_button")
+
+    def _wanted(self, types: list[str]) -> bool:
+        if self.service_types is None:
+            return True
+        found = {code.upper() for code in types}
+        return bool(found) and found <= self.service_types
+
+    async def _apply_in_window(self, slot: Slot, window: Locator) -> ApplyResult:
         try:
-            tag = await self.reader.find_available_tag(slot)
-            if tag is None:
-                return ApplyResult(slot, ApplyOutcome.MISSED, "gone")
-            await self._mark_current_messages()
-            await tag.evaluate("el => el.scrollIntoView({block: 'center'})")
-            await tag.click()
-            accept, window = await self._wait_for_accept(opening.clock)
-            if accept is None and window is None:
-                return ApplyResult(slot, ApplyOutcome.ERROR, "no_accept_button")
-            if accept is None:
-                accept = await self._find_button(window, self._accept_re)
+            if not self._wanted(_TYPES_RE.findall(await window.inner_text())):
+                await self._close_windows()
+                return ApplyResult(slot, ApplyOutcome.ERROR, "not_a_wanted_type")
+            accept = await self._find_button(window, self._accept_re)
             if accept is None:
                 await self._close_windows()
                 return ApplyResult(slot, ApplyOutcome.ERROR, "no_accept_button")
             if self.test_mode:
                 await self._close_windows()
                 return ApplyResult(slot, ApplyOutcome.TEST_MODE, "found_accept_button")
-            window_el = await window.element_handle() if window is not None else None
-        except SiteError as exc:
-            return ApplyResult(slot, ApplyOutcome.ERROR, exc.code)
+            window_el = await window.element_handle()
         except PlaywrightError as exc:
             log.warning("Could not open the opening for %s (%s)", slot, type(exc).__name__)
             await self._close_windows_quietly()
             return ApplyResult(slot, ApplyOutcome.ERROR, "open_failed")
-
-        if window_el is None:
-            return await self._accept_from_list(slot, accept)
         try:
             await accept.click()
             await self._confirm_if_asked(window_el)
@@ -114,7 +178,8 @@ class Applier:
             self.page.remove_listener("response", on_response)
         await self._close_windows_quietly()
         if not answers:
-            return await self._result_from_calendar(slot, site_reported_problem=False)
+            log.warning("Clicked Accept for %s but Elisa's answer didn't come", slot)
+            return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "no_answer", clicked=True)
         response = answers[0]
         try:
             data = await response.json()
@@ -125,36 +190,42 @@ class Applier:
             return ApplyResult(slot, ApplyOutcome.APPLIED, "", clicked=True)
         if response.ok and self._taken_re.search(message):
             return ApplyResult(slot, ApplyOutcome.MISSED, "taken", clicked=True)
+        if response.ok and isinstance(data, dict) and data.get("status") is False:
+            log.info("Elisa refused the Accept for %s: %s", slot, describe_refusal(message))
+            return ApplyResult(slot, ApplyOutcome.REFUSED, "refused", clicked=True)
+        if not response.ok:
+            log.warning("Elisa answered the Accept for %s with HTTP %d", slot, response.status)
         return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "site_reported_problem", clicked=True)
 
-    async def _result_from_calendar(self, slot: Slot, *, site_reported_problem: bool) -> ApplyResult:
-        try:
-            tags = await self._recheck(slot)
-        except (SiteError, PlaywrightError):
-            return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "check_failed", clicked=True)
-        if tags is not None and tags.booked:
-            return ApplyResult(slot, ApplyOutcome.APPLIED, "", clicked=True)
-        if tags is None or tags.available == 0:
-            return ApplyResult(slot, ApplyOutcome.MISSED, "taken", clicked=True)
-        code = "site_reported_problem" if site_reported_problem else "no_change"
-        return ApplyResult(slot, ApplyOutcome.UNVERIFIED, code, clicked=True)
-
-    async def _wait_for_accept(self, clock: str | None, timeout_s: float = 8.0) -> tuple[Locator | None, Locator | None]:
+    async def _wait_for_accepts(
+        self, clock: str | None, timeout_s: float = 8.0, settle_s: float = 1.5
+    ) -> tuple[list[Locator], Locator | None]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
+        listed_at = None
         while loop.time() < deadline:
             buttons = self.page.locator(self.sel.list_accept_button)
+            matching = []
+            visible = 0
             for i in range(await buttons.count()):
                 button = buttons.nth(i)
                 if not (await button.is_visible() and await button.is_enabled()):
                     continue
-                if clock is None or await button.evaluate(_ROW_CLOCK_JS, self.sel.order_row) == clock:
-                    return button, None
+                visible += 1
+                row = await button.evaluate(_ROW_JS, self.sel.order_row)
+                if (clock is None or row["clock"] == clock) and self._wanted(row["types"]):
+                    matching.append(button)
+            if matching:
+                return matching, None
+            if visible:
+                listed_at = listed_at or loop.time()
+                if loop.time() - listed_at > settle_s:
+                    return [], None
             windows = await self._visible_windows()
             if windows:
-                return None, windows[-1]
+                return [], windows[-1]
             await asyncio.sleep(0.1)
-        return None, None
+        return [], None
 
     async def _click_confirm(self, work_order_window: ElementHandle | None) -> bool:
         for window in reversed(await self._visible_windows()):

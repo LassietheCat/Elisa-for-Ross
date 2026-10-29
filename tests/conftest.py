@@ -18,8 +18,8 @@ def fixed_now() -> dt.datetime:
     return FIXED_NOW
 
 
-def wo(date: str, half: str, status: str, time: str | None = None) -> dict:
-    return {"date": date, "half": half, "status": status, "time": time}
+def wo(date: str, half: str, status: str, time: str | None = None, court: str | None = None, sertype: str | None = None) -> dict:
+    return {"date": date, "half": half, "status": status, "time": time, "court": court, "sertype": sertype}
 
 
 def make_settings(data_dir: Path, base_url: str, **overrides) -> Settings:

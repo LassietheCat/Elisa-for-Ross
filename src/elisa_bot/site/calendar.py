@@ -71,18 +71,19 @@ _READ_JS = (
 }"""
 )
 
-_FIND_TAG_JS = (
+_FIND_TAGS_JS = (
     "(sel) => {"
     + _WALK_JS
     + r"""
   const available = new RegExp(sel.availableRe, 'i');
+  const found = [];
   for (const { day, halves } of walk()) {
     if (day !== sel.day) continue;
     for (const tag of halves[sel.half] || []) {
-      if (available.test(tag.word)) return tag.el;
+      if (available.test(tag.word)) found.push(tag.el);
     }
   }
-  return null;
+  return found;
 }"""
 )
 
@@ -223,16 +224,19 @@ class CalendarReader:
             slots.update((await self.read_displayed_month()).slots)
         return slots
 
-    async def find_available_tag(self, slot: Slot) -> ElementHandle | None:
+    async def find_available_tags(self, slot: Slot) -> list[ElementHandle]:
         await self.go_to_month(slot.date.year, slot.date.month)
         handle = await self.page.evaluate_handle(
-            _FIND_TAG_JS,
+            _FIND_TAGS_JS,
             self._js_args(day=slot.date.day, half=slot.half.value, availableRe=self.sel.status_words["available"]),
         )
-        element = handle.as_element()
-        if element is None:
-            await handle.dispose()
-        return element
+        properties = await handle.get_properties()
+        elements = [properties[key].as_element() for key in sorted(properties, key=lambda key: int(key) if key.isdigit() else -1)]
+        return [element for element in elements if element is not None]
+
+    async def find_available_tag(self, slot: Slot) -> ElementHandle | None:
+        tags = await self.find_available_tags(slot)
+        return tags[0] if tags else None
 
     def status_of(self, word: str) -> str | None:
         for status, regex in self._status_res.items():

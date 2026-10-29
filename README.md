@@ -1,9 +1,9 @@
 # Elisa bot
 
 Watches the Elisa **Open Work Orders** calendar for the account owner. When a new
-opening appears, it accepts it if the owner has fewer jobs that day than the
-maximum set on the page (3 by default) and it starts at least 3 hours from each of
-her other jobs that day. It then sends an email containing only the date and AM/PM.
+opening of a job type chosen on the page (VRI, OPI or OSI) appears, it accepts it if
+the owner has fewer jobs that day than the maximum set on the page (3 by default) and
+it starts at least 3 hours from each of her other jobs that day. It then sends an email containing only the date and AM/PM.
 
 It does with the owner's own sign-in what the owner otherwise does by hand: sign
 in, open Open Work Orders, click **Available** to reload the calendar, look at this
@@ -79,7 +79,14 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
     count request.
   - **Open orders on the calendar** are number badges (`calender-cell-badge`, for
     example "1") with the court code beside them, grouped by court in each half-day.
-    The bot counts them as openings in that half-day and reads nothing else from them.
+    A badge also stays for an order that is already taken (it turns orange or green),
+    so when Elisa's open-order list loaded with the read, the list decides: an order
+    marked Assigned or Confirmed, or with an assign or confirm record, is taken, and a
+    badge only marks where to click. Every visible badge is remembered as seen, so a
+    taken order's badge never looks new later. If one open order in the list has no
+    readable start time, badges count as openings only on that order's date. If the
+    list can't be read at all, the bot accepts nothing from that read and emails "the
+    bot may be missing openings" once; a list request that fails fails the check.
   - **Live channel:** the page keeps a websocket open to Elisa and joins a room for
     each of the owner's languages. The bot listens to what arrives on its own page; it
     adds no requests. Each event is logged by name, date and AM/PM only. An order
@@ -158,9 +165,13 @@ shows:
   seconds after it noticed them), including openings that were gone before it could
   read them;
 - the slots accepted recently (date and AM/PM only);
-- **Days off:** dates when the bot doesn't accept jobs (a date picker; past days drop
-  off by themselves). Openings on those days are only reported, as "day off";
+- **Days off:** dates or half-days when the bot doesn't accept jobs (a date picker plus
+  Whole day / AM only / PM only; AM and PM of one date merge into a whole day; past
+  days drop off by themselves). AM means a start before noon Eastern, PM noon or later,
+  as in the emails. Openings then are only reported, as "day off";
 - **Jobs per day:** the most jobs a day the bot will fill up to (1–4, default 3);
+- **Job types:** the service types the bot accepts: VRI (video), OPI (phone), OSI (on
+  site); at least one, all three by default. Orders of other types are ignored;
 - a **Send test alert** button.
 
 The page refreshes itself every minute, and can be saved to a phone's home screen: it
@@ -206,13 +217,14 @@ security settings. For other providers leave `SMTP_PROVIDER` empty and set
 |---|---|---|
 | Applied | the bot accepted a job | always |
 | Please check | Accept was clicked but the result couldn't be confirmed | always |
+| Refused | Elisa answered the Accept with a refusal (other than "No Longer Available") | always |
 | Test mode, opening | test mode found an opening and its Accept button | always |
 | Missed | an opening was taken by someone else first | `NOTIFY_MISSED` |
 | Skipped | a new opening where the owner already has a job | `NOTIFY_SKIPPED` |
 | Bot switched off | Elisa rejected the sign-in; the bot stopped itself | always |
 | Bot can't check right now | 3 checks in a row failed | always |
 | Bot is working again | checks work again after that alert | always |
-| Bot may be missing openings | Elisa's own count shows more openings than the calendar, or a tag can't be read | always |
+| Bot may be missing openings | a calendar tag can't be read | always |
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the
@@ -234,8 +246,7 @@ an empty month. It reports:
   day (Applied / Assigned / Confirmed, AM and PM). The check compares that with what
   the reader saw, half-day by half-day, and lists any difference;
 - notes: tag words the reader doesn't recognise (in case an opening is labelled
-  differently than expected), and the site's own open-work-order count when it
-  differs from the calendar.
+  differently than expected).
 
 If something doesn't fit, adjust `site/selectors.py` (or a `SELECTORS_FILE`) and run
 it again.
@@ -254,9 +265,7 @@ it again.
    the month on screen, which keeps it to one page load per month.
 4. If Elisa refused any of the month's data (429 Too Many Requests or a server error),
    the check fails and nothing is accepted.
-   It also compares the calendar with Elisa's own count of open work orders (which the
-   page downloads) and logs a warning if they differ, or if a calendar tag can't be
-   read. A missed opening shows up in the log at once (counts and dates only).
+   It logs a warning if a calendar tag can't be read (dates only).
 5. Saves state to `data/state.json` and sends **one** email for the whole run, or
    nothing if nothing happened.
 
@@ -264,18 +273,32 @@ it again.
 
 - **Test mode is the code's default** (`TEST_MODE=true`): the bot opens the opening,
   finds the Accept button and doesn't click it. The server runs with `TEST_MODE=false`.
-- **How Accept works on Elisa:** clicking the badge opens the court's list of work
-  orders under the calendar. The bot clicks the first Accept button in that half-day
-  (found by its `onAccept` handler, since Elisa fills in the label itself). For an
-  on-site job Elisa first shows the driving distance; the bot answers **Continue**.
-  The bot then reads Elisa's own answer to the request (`status` true or false):
-  true is "Applied", "No Longer Available" is "Missed", anything else is "please
-  check". Elisa assigns the job the moment it is accepted, and an assigned job can
-  only be withdrawn by emailing SOSi, so every Accept is binding. If Elisa shows a pop-up window instead of the list, the bot
-  uses the Accept button in that window.
-- **Missed openings are reported:** if Elisa's own count lists more open work orders
-  than the bot sees, or a calendar tag can't be read, one "the bot may be missing
-  openings" email goes out.
+- **How Accept works on Elisa:** clicking a badge opens that court's list of work
+  orders under the calendar. The bot clicks an Accept button whose row shows the
+  opening's start time (found by its `onAccept` handler, since Elisa fills in the label
+  itself). For an on-site job Elisa first shows the driving distance; the bot answers
+  **Continue**. It then reads Elisa's own answer to the request (`status` true or
+  false): true is "Applied"; false with "No Longer Available" is "Missed"; any other
+  false is "Elisa refused it"; no answer or an HTTP error is "please check". A taken
+  order can sit next to the open one (Elisa still shows Accept for an Assigned order),
+  so after a refusal or "No Longer Available" the bot tries the next matching row,
+  then the next badge in the half-day, up to 3 tries, and stops at the first success.
+  Elisa assigns the job the moment it is accepted, and an assigned job can only be
+  withdrawn by emailing SOSi, so every Accept is binding. If Elisa shows a pop-up
+  window instead of the list, the bot uses the Accept button in that window.
+- **Missed openings are reported:** if a calendar tag or Elisa's open-order list can't
+  be read, one "the bot may be missing openings" email goes out.
+- **Minimum notice** (`MIN_NOTICE_MINUTES`, 0 = off): openings that start sooner than
+  this are not accepted and are emailed as "too soon (minimum notice N hours)". Without
+  a start time, the half-day's earliest possible start counts (midnight for AM, noon
+  for PM).
+- **Page changes are logged** by the page service: `journalctl -u elisa-control | grep "Page:"`
+  shows days off added or removed, the switch, the interval, jobs per day and job types.
+- **Only the chosen job types:** an open order counts only if its service type
+  (`sertype` in Elisa's list) is ticked under **Job types** on the page, in both the
+  quick check and the calendar reads; an order without a type doesn't count. Before
+  clicking, the bot checks the type on the order's row again and only clicks Accept on
+  a row of a chosen type.
 - **First run = baseline.** The first run, the first run after `reset-state`, and
   the first look at a month that comes into view only record what is already open
   (`APPLY_ON_FIRST_RUN=false`), because an accepted job can only be withdrawn by
@@ -302,7 +325,9 @@ it again.
   calendar data request failed accepts nothing and doesn't update the saved state.
 - **Privacy:** only the date + AM/PM of a slot is stored, logged or emailed. Job
   details in the work-order list and in Elisa's live events are never stored, logged
-  or sent. Credentials come from `.env`
+  or sent. When Elisa refuses an Accept, the log keeps only the generic words of its
+  message (other words become "…", numbers are dropped), its length and a short
+  fingerprint, so repeats can be grouped. Credentials come from `.env`
   or `*_FILE` secret files, are hidden from `repr()`, and are redacted from logs.
   No screenshots or browser recordings are saved. Logs and state are owner-only (0600).
 

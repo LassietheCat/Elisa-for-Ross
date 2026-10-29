@@ -198,31 +198,12 @@ async def test_calendar_tags_the_bot_cannot_read_are_logged_and_emailed(mock, se
     )]
 
 
-async def test_more_openings_in_elisas_own_count_are_logged_and_emailed_once(mock, settings, caplog):
-    caplog.set_level(logging.WARNING)
-    mock.configure(count_extra_new=1)
-    capture = Capture()
-    session = await signed_in(settings)
-    try:
-        await run(settings, capture, session)
-        await run(settings, capture, session, month=(2026, 10))
-    finally:
-        await session.close()
-    warning = "2026-10: Elisa's own count shows 1 open work order(s), the calendar shows 0"
-    assert caplog.text.count(warning) == 1
-    assert "2026-11: Elisa's own count shows 1 open work order(s)" in caplog.text
-    assert [m.subject for m in capture.messages] == ["Elisa: the bot may be missing openings"]
-    assert "October 2026: Elisa lists 1 open work order(s), but the bot saw 0 on the calendar." in capture.messages[0].text
-    assert "December 2026: Elisa lists 1 open work order(s)" in capture.messages[0].text
-
-
-async def test_matching_counts_and_known_tags_log_and_send_nothing(mock, settings, caplog):
+async def test_known_tags_log_and_send_nothing(mock, settings, caplog):
     caplog.set_level(logging.INFO)
     mock.set_work_orders([wo("2026-10-14", "AM", "available"), wo("2026-10-15", "PM", "assigned")])
     capture = Capture()
     await run(settings, capture)
-    assert caplog.text.count("Reading Elisa's own open-work-order count too") == 1
-    assert "couldn't read" not in caplog.text and "own count shows" not in caplog.text
+    assert "couldn't read" not in caplog.text and "doesn't know" not in caplog.text
     assert capture.messages == []
 
 
@@ -446,6 +427,18 @@ async def test_an_opening_on_a_day_off_is_not_accepted(mock, tmp_path):
     assert state.daily[fixed_now().date().isoformat()]["reads"] == 2
 
 
+async def test_only_the_half_day_marked_off_is_skipped(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    ControlStore(settings).update(by="test", now=fixed_now(), add_day_off=S("2026-10-14 AM"))
+    mock.set_work_orders([wo("2026-10-14", "AM", "available", "09:00"), wo("2026-10-14", "PM", "available", "14:00")])
+    report = await run(settings, capture)
+    assert [str(r.slot) for r in report.results] == ["2026-10-14 PM"] and report.skipped_day_off == [S("2026-10-14 AM")]
+    assert len(mock.stats()["accept_calls"]) == 1
+    assert capture.messages[-1].text == "Applied: Wed Oct 14 PM. Not accepted, marked as a day off: Wed Oct 14 AM."
+
+
 async def test_several_jobs_a_day_three_hours_apart_are_accepted_by_start_time(mock, tmp_path):
     settings = make_settings(tmp_path, mock.base_url, test_mode=False)
     capture = Capture()
@@ -472,5 +465,86 @@ async def test_several_jobs_a_day_three_hours_apart_are_accepted_by_start_time(m
         )
         stored = settings.state_path.read_text()
         assert "13:00" not in stored and "01:00 PM" not in stored and "16:00" not in stored
+    finally:
+        await session.close()
+
+
+async def test_an_order_elisa_still_lists_but_marks_assigned_is_left_alone(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        await run(settings, capture, session)
+        mock.set_work_orders([wo("2026-11-16", "AM", "assigned_listed", "09:00")])
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert report.available == set() and report.results == []
+        assert mock.stats()["accept_calls"] == [] and capture.messages == []
+    finally:
+        await session.close()
+
+
+
+async def test_a_taken_badge_is_never_accepted_when_the_list_cannot_be_read(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        mock.set_work_orders([wo("2026-11-16", "AM", "assigned_listed", "09:00")])
+        await run(settings, capture, session)
+        mock.configure(list_no_data_times=5)
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert report.results == [] and mock.stats()["accept_calls"] == []
+        assert [m.subject for m in capture.messages] == ["Elisa: the bot may be missing openings"]
+        assert "Elisa's open-order list couldn't be read" in capture.messages[0].text
+        assert "2026-11-16 AM" in StateStore(settings.state_path).load().seen
+    finally:
+        await session.close()
+
+
+async def test_an_order_without_a_time_lets_only_its_own_date_count_by_badge(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        await run(settings, capture, session)
+        mock.set_work_orders([wo("2026-11-16", "AM", "assigned_listed", "09:00"), wo("2026-11-20", "PM", "available", "TBD")])
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert [str(r.slot) for r in report.results] == ["2026-11-20 PM"]
+        assert mock.stats()["accept_calls"] == ["2"]
+    finally:
+        await session.close()
+
+
+async def test_a_failed_list_request_fails_the_check_and_accepts_nothing(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        await run(settings, capture, session)
+        mock.set_work_orders([wo("2026-11-03", "PM", "available", "13:00")])
+        mock.configure(list_error_times=1)
+        with pytest.raises(DataRequestFailed):
+            await run(settings, capture, session, month=(2026, 11))
+        assert mock.stats()["accept_calls"] == []
+    finally:
+        await session.close()
+
+
+async def test_only_wanted_job_types_are_accepted(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    ControlStore(settings).update(by="test", now=fixed_now(), service_types=["VRI"])
+    session = await signed_in(settings)
+    try:
+        await run(settings, capture, session)
+        mock.set_work_orders([
+            wo("2026-11-17", "PM", "available", "13:00", sertype="OSI"),
+            wo("2026-11-18", "AM", "available", "09:00", sertype="OPI"),
+            wo("2026-11-19", "AM", "available", "10:00", sertype="VRI"),
+        ])
+        report = await run(settings, capture, session, month=(2026, 11))
+        assert [str(r.slot) for r in report.results] == ["2026-11-19 AM"]
+        assert mock.stats()["accept_calls"] == ["3"]
+        assert [m.subject for m in capture.messages] == ["Elisa: applied Thu Nov 19 AM"]
     finally:
         await session.close()

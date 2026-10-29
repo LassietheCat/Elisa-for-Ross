@@ -95,6 +95,7 @@ _SUBJECTS = (
     (ApplyOutcome.UNVERIFIED, "please check"),
     (ApplyOutcome.TEST_MODE, "test mode, opening"),
     (ApplyOutcome.MISSED, "missed"),
+    (ApplyOutcome.REFUSED, "refused"),
     (ApplyOutcome.ERROR, "opening"),
 )
 
@@ -107,8 +108,10 @@ def cycle_message(
     days_off: Iterable[Slot] = (),
     too_close: Iterable[Slot] = (),
     day_full: Iterable[Slot] = (),
+    too_soon: Iterable[Slot] = (),
     gap_hours: float = 3,
     max_jobs: int = 3,
+    notice_hours: float = 0,
 ) -> Message | None:
     by_outcome = {outcome: [r.slot for r in results if r.outcome is outcome] for outcome in ApplyOutcome}
     if not include_missed:
@@ -117,6 +120,7 @@ def cycle_message(
     days_off = sorted(days_off)
     too_close = sorted(too_close)
     day_full = sorted(day_full)
+    too_soon = sorted(too_soon)
 
     lines = []
     if by_outcome[ApplyOutcome.APPLIED]:
@@ -130,6 +134,8 @@ def cycle_message(
         )
     if by_outcome[ApplyOutcome.MISSED]:
         lines.append(f"Missed, taken before Accept finished: {_labels(by_outcome[ApplyOutcome.MISSED])}.")
+    if by_outcome[ApplyOutcome.REFUSED]:
+        lines.append(f"Not accepted, Elisa refused it: {_labels(by_outcome[ApplyOutcome.REFUSED])}.")
     if by_outcome[ApplyOutcome.ERROR]:
         lines.append(f"Opening seen but Accept could not be tried, will retry: {_labels(by_outcome[ApplyOutcome.ERROR])}.")
     if skipped:
@@ -138,6 +144,8 @@ def cycle_message(
         lines.append(f"Not accepted, less than {gap_hours:g} hours from another job: {_labels(too_close)}.")
     if day_full:
         lines.append(f"Not accepted, already {max_jobs} jobs that day: {_labels(day_full)}.")
+    if too_soon:
+        lines.append(f"Not accepted, too soon (minimum notice {notice_hours:g} hours): {_labels(too_soon)}.")
     if days_off:
         lines.append(f"Not accepted, marked as a day off: {_labels(days_off)}.")
     if not lines:
@@ -156,6 +164,8 @@ def cycle_message(
         subject = f"Elisa: opening {too_close[0].label()} (too close to another job)"
     if subject is None and day_full:
         subject = f"Elisa: opening {day_full[0].label()} (day full)"
+    if subject is None and too_soon:
+        subject = f"Elisa: opening {too_soon[0].label()} (too soon)"
     if subject is None:
         subject = f"Elisa: opening {days_off[0].label()} (day off)"
     return Message(subject, " ".join(lines))

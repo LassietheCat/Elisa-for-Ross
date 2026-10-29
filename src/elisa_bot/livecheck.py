@@ -54,7 +54,6 @@ class SiteCheckReport:
 @dataclass
 class _Mark:
     schedule: int
-    counts: int
 
 
 class SiteData:
@@ -62,7 +61,6 @@ class SiteData:
         self.sel = selectors
         self.schedule: dict[str, dict] = {}
         self.schedule_responses = 0
-        self.counts: list[dict[str, int]] = []
         self.errors: list[str] = []
         self._tasks: list[asyncio.Task] = []
 
@@ -70,27 +68,20 @@ class SiteData:
         path = urlsplit(response.url).path
         if response.status >= 400:
             self.errors.append(f"{response.status} {response.request.method} {mask_path(path)}")
-        if path.endswith(self.sel.schedule_api) or path.endswith(self.sel.counts_api):
-            self._tasks.append(asyncio.create_task(self._read(response, path)))
+        if path.endswith(self.sel.schedule_api):
+            self._tasks.append(asyncio.create_task(self._read(response)))
 
-    async def _read(self, response: Response, path: str) -> None:
+    async def _read(self, response: Response) -> None:
         try:
             data = await response.json()
         except (PlaywrightError, ValueError):
             return
-        if not isinstance(data, dict):
-            return
-        if path.endswith(self.sel.schedule_api):
-            result = data.get("result")
-            if isinstance(result, dict):
-                self.schedule_responses += 1
-                for day, statuses in result.items():
-                    if isinstance(statuses, dict) and re.match(r"^\d{4}-\d{2}-\d{2}$", str(day)):
-                        self.schedule[str(day)] = statuses
-        else:
-            counts = data.get("responseCount")
-            if isinstance(counts, dict):
-                self.counts.append({k: int(v) for k, v in counts.items() if isinstance(v, (int, float))})
+        result = data.get("result") if isinstance(data, dict) else None
+        if isinstance(result, dict):
+            self.schedule_responses += 1
+            for day, statuses in result.items():
+                if isinstance(statuses, dict) and re.match(r"^\d{4}-\d{2}-\d{2}$", str(day)):
+                    self.schedule[str(day)] = statuses
 
     async def settle(self) -> None:
         if self._tasks:
@@ -98,7 +89,7 @@ class SiteData:
             self._tasks.clear()
 
     def mark(self) -> _Mark:
-        return _Mark(self.schedule_responses, len(self.counts))
+        return _Mark(self.schedule_responses)
 
 
 def mask_path(path: str) -> str:
@@ -307,10 +298,3 @@ def _check_month(
     else:
         report.warnings.append(f"{name}: the site's schedule data wasn't seen, so the cross-check was skipped.")
 
-    if len(data.counts) > mark.counts:
-        site_new = data.counts[-1].get("new")
-        if site_new is not None and site_new != totals["available"]:
-            report.warnings.append(
-                f"{name}: the site's own count shows {site_new} open work order(s), the calendar shows "
-                f"{totals['available']}. The count may cover a different date range; worth a look."
-            )

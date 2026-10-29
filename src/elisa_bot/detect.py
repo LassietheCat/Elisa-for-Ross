@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import AbstractSet, Iterable, Mapping
 
 from .config import Settings
-from .models import Opening, Slot, SlotTags
+from .models import Half, Opening, OpenOrders, Slot, SlotTags
 from .state import BotState
 
 
@@ -20,13 +20,19 @@ class Plan:
     skipped_day_off: list[Slot] = field(default_factory=list)
     skipped_too_close: list[Slot] = field(default_factory=list)
     skipped_day_full: list[Slot] = field(default_factory=list)
+    skipped_too_soon: list[Slot] = field(default_factory=list)
     baseline_only: bool = False
 
 
-def openings_in(slots: Mapping[Slot, SlotTags], starts: Iterable[dt.datetime] | None) -> list[Opening]:
+def openings_in(slots: Mapping[Slot, SlotTags], orders: OpenOrders | Iterable[dt.datetime] | None) -> list[Opening]:
     open_slots = {slot for slot, tags in slots.items() if tags.available > 0}
-    timed = [opening for opening in map(Opening.at, starts or ()) if opening.slot in open_slots]
-    untimed = [Opening(slot) for slot in open_slots - {opening.slot for opening in timed}]
+    if orders is None:
+        return sorted((Opening(slot) for slot in open_slots), key=_order)
+    if not isinstance(orders, OpenOrders):
+        orders = OpenOrders(tuple(orders))
+    timed = [opening for opening in map(Opening.at, orders.starts) if opening.slot in open_slots]
+    covered = {opening.slot for opening in timed}
+    untimed = [Opening(slot) for slot in open_slots - covered if slot.date in orders.untimed_days]
     return sorted(timed + untimed, key=_order)
 
 
@@ -53,6 +59,7 @@ def plan_month(
     *,
     today: dt.date,
     settings: Settings,
+    now: dt.datetime | None = None,
     openings: list[Opening] | None = None,
     known: Mapping[Slot, AbstractSet[str]] | None = None,
     clicked: AbstractSet[tuple[Slot, str | None]] = frozenset(),
@@ -60,7 +67,7 @@ def plan_month(
     max_jobs: int = 3,
     already_planned: int = 0,
     baseline: bool | None = None,
-    days_off: set[dt.date] | frozenset[dt.date] = frozenset(),
+    days_off: AbstractSet[Slot] = frozenset(),
 ) -> Plan:
     openings = openings_in(slots, None) if openings is None else openings
     candidates = new_openings(openings, state, known or {})
@@ -79,6 +86,7 @@ def plan_month(
     times_known = job_times or {}
     applied = state.applied_slots()
     gap = dt.timedelta(minutes=settings.job_gap_minutes)
+    notice = dt.timedelta(minutes=settings.min_notice_minutes)
     cap = settings.max_applies_per_day
     budget = None if cap == 0 else max(0, cap - state.applies_on(today) - already_planned)
     chosen: dict[dt.date, list[Opening]] = {}
@@ -88,8 +96,11 @@ def plan_month(
             continue
         if state.attempts.get(str(opening.slot), 0) >= settings.max_attempts_per_slot:
             continue
-        if day in days_off:
+        if opening.slot in days_off:
             plan.skipped_day_off.append(opening.slot)
+            continue
+        if notice and now is not None and _earliest_start(opening, now) - now < notice:
+            plan.skipped_too_soon.append(opening.slot)
             continue
         picked = chosen.setdefault(day, [])
         if jobs[day] + len(picked) >= max_jobs:
@@ -116,6 +127,13 @@ def plan_month(
         plan.to_apply.append(opening)
         picked.append(opening)
     return plan
+
+
+def _earliest_start(opening: Opening, now: dt.datetime) -> dt.datetime:
+    if opening.start is not None:
+        return opening.start
+    hour = 0 if opening.slot.half is Half.AM else 12
+    return dt.datetime.combine(opening.slot.date, dt.time(hour), tzinfo=now.tzinfo)
 
 
 def _order(opening: Opening) -> tuple:

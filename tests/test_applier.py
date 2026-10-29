@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import datetime as dt
+import logging
+from zoneinfo import ZoneInfo
 import pytest
 from playwright.async_api import Error as PlaywrightError
 
-from elisa_bot.models import ApplyOutcome, Slot
-from elisa_bot.site.applier import Applier
+from elisa_bot.models import ApplyOutcome, Opening, Slot
+from elisa_bot.site import applier as applier_module
+from elisa_bot.site.applier import Applier, describe_refusal
 from elisa_bot.site.calendar import CalendarReader
 from elisa_bot.site.selectors import Selectors
 from tests.conftest import wo
@@ -170,3 +174,72 @@ async def test_a_label_elisa_fills_in_itself_does_not_matter(mock, session):
     mock.set_work_orders([wo("2026-10-14", "PM", "available")])
     applier = await make_applier(session, test_mode=False)
     assert (await applier.apply_one(S("2026-10-14 PM"))).outcome is ApplyOutcome.APPLIED
+
+
+async def test_a_refusal_from_elisa_is_reported_as_refused_with_its_wording_masked(mock, session, caplog):
+    caplog.set_level(logging.INFO)
+    mock.configure(apply_mode="refuse")
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(S("2026-10-14 AM"))
+    assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.REFUSED, "refused", True)
+    assert "Elisa refused the Accept for 2026-10-14 AM: request could not be completed for coi [" in caplog.text
+    assert "9990001" not in caplog.text
+
+
+
+def at(text: str) -> dt.datetime:
+    return dt.datetime.fromisoformat(text).replace(tzinfo=ZoneInfo("America/New_York"))
+
+
+async def test_after_a_refusal_the_next_order_at_the_same_time_is_taken(mock, session):
+    mock.set_work_orders([wo("2026-10-14", "AM", "assigned_listed", "09:00"), wo("2026-10-14", "AM", "available", "09:00")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(Opening(S("2026-10-14 AM"), at("2026-10-14T09:00")))
+    assert result.outcome is ApplyOutcome.APPLIED
+    assert mock.stats()["accept_calls"] == ["1", "2"]
+
+
+async def test_a_taken_order_in_another_court_is_skipped_for_the_open_one(mock, session):
+    mock.set_work_orders([
+        wo("2026-10-14", "AM", "assigned_listed", "09:00", "AAA"),
+        wo("2026-10-14", "AM", "available", "09:00", "BBB"),
+    ])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(Opening(S("2026-10-14 AM"), at("2026-10-14T09:00")))
+    assert result.outcome is ApplyOutcome.APPLIED
+    assert mock.stats()["accept_calls"] == ["1", "2"]
+
+
+async def test_no_answer_from_elisa_asks_to_check_even_if_that_half_day_has_another_job(mock, session, monkeypatch):
+    monkeypatch.setattr(applier_module, "ACCEPT_ANSWER_S", 0.5)
+    mock.configure(accept_delay_ms=3000)
+    mock.set_work_orders([wo("2026-10-14", "AM", "assigned", "07:00"), wo("2026-10-14", "AM", "available", "11:30")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(Opening(S("2026-10-14 AM"), at("2026-10-14T11:30")))
+    assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.UNVERIFIED, "no_answer", True)
+
+
+def test_a_refusal_is_logged_without_names_courts_or_numbers():
+    text = describe_refusal("COI 1234567 is assigned to Maria Lopez (Spanish) at Bronx Criminal Court, Judge R. Ortiz")
+    assert text.startswith("coi is assigned to … at … [88 chars, #")
+    for detail in ("1234567", "Maria", "Lopez", "Spanish", "Bronx", "Court", "Ortiz"):
+        assert detail not in text
+    assert describe_refusal("").startswith("no reason given [0 chars")
+
+
+async def test_only_a_row_of_a_wanted_job_type_is_accepted(mock, session):
+    mock.set_work_orders([
+        wo("2026-10-14", "AM", "available", "09:00", sertype="OSI"),
+        wo("2026-10-14", "AM", "available", "09:00", sertype="VRI"),
+        wo("2026-10-15", "PM", "available", "14:00", sertype="OPI"),
+    ])
+    await session.ensure_ready()
+    reader = CalendarReader(session.page, Selectors())
+    await reader.refresh()
+    applier = Applier(session.page, Selectors(), reader, test_mode=False, service_types=frozenset({"VRI"}))
+    result = await applier.apply_one(Opening(S("2026-10-14 AM"), at("2026-10-14T09:00")))
+    assert result.outcome is ApplyOutcome.APPLIED and mock.stats()["accept_calls"] == ["2"]
+    result = await applier.apply_one(Opening(S("2026-10-15 PM"), at("2026-10-15T14:00")))
+    assert (result.outcome, result.clicked) == (ApplyOutcome.ERROR, False)
+    assert mock.stats()["accept_calls"] == ["2"]

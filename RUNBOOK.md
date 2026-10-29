@@ -170,9 +170,10 @@ when Elisa lists a new open work order or refuses one.
 |---|---|---|
 | Bot switched off (sign-in problem) | Elisa rejected the password or asked for a verification step. The bot stopped itself and won't retry. | Sign in by hand once; update the secret file; restart; switch on. |
 | Bot can't check right now | 3 checks in a row failed. | Usually fixes itself ("working again" follows). If not within 30 minutes: read the log, then `elisa-bot off`, `elisa-bot site-check`, `elisa-bot on`. |
-| Please check | Accept was clicked but the result couldn't be confirmed. | Look at Elisa. |
+| Please check | Accept was clicked but Elisa's answer didn't come or was an error. | Look at Elisa. |
+| Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
 | Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
-| Bot may be missing openings | Elisa's own count lists more open work orders than the bot saw, or a calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |
+| Bot may be missing openings | A calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |
 | Applied, test mode, missed, skipped, working again | Normal. | Nothing. |
 
 ## When something is wrong
@@ -185,10 +186,11 @@ when Elisa lists a new open work order or refuses one.
   `src/elisa_bot/site/selectors.py` (or a `SELECTORS_FILE`), and run `site-check` again
   (with the bot switched off, as above).
 - **Many "site_busy" lines in the log:** the interval is too short; raise it on the page.
-- **"Elisa's own count shows N open work order(s), the calendar shows M", or "calendar
-  tag(s) the bot couldn't read":** the bot may be missing openings. Run `site-check`
-  (with the bot switched off) and send its output to the developer. Check for these with
-  `journalctl -u elisa-bot --since today | grep -E "own count|couldn't read|doesn't know"`.
+- **"calendar tag(s) the bot couldn't read":** the bot may be missing openings. Run
+  `site-check` (with the bot switched off) and send its output to the developer. Check
+  for these with `journalctl -u elisa-bot --since today | grep -E "couldn't read|doesn't know"`.
+- **Who changed a setting on the page:** `journalctl -u elisa-control | grep "Page:"`
+  (since Oct 27; the page has one shared password, so it shows when, not who).
 
 ## Live and test mode
 

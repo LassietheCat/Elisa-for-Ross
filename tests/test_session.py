@@ -133,3 +133,25 @@ async def test_reads_the_start_times_of_the_owners_jobs_on_a_day(mock, session):
     times = await session.job_times(dt.date(2026, 11, 4), TODAY)
     assert [f"{t:%Y-%m-%d %H:%M %Z}" for t in times] == ["2026-11-04 08:15 EST", "2026-11-04 13:30 EST"]
     assert await session.job_times(dt.date(2026, 11, 6), TODAY) == []
+
+
+async def test_an_order_elisa_marks_assigned_is_not_open(mock, session):
+    mock.set_work_orders([wo("2026-11-16", "AM", "assigned_listed", "09:00"), wo("2026-11-17", "PM", "available", "13:00")])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    orders = await session.open_orders(OCT_1, DEC_31, TODAY)
+    assert [f"{t:%Y-%m-%d %H:%M}" for t in orders] == ["2026-11-17 13:00"]
+
+
+async def test_only_wanted_job_types_are_listed(mock, session):
+    mock.set_work_orders([
+        wo("2026-11-17", "PM", "available", "13:00", sertype="VRI"),
+        wo("2026-11-18", "AM", "available", "09:00", sertype="OSI"),
+        wo("2026-11-19", "AM", "available", "10:00", sertype="OPI"),
+    ])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    assert len(await session.open_orders(OCT_1, DEC_31, TODAY)) == 3
+    session.service_types = frozenset({"VRI"})
+    orders = await session.open_orders(OCT_1, DEC_31, TODAY)
+    assert [f"{t:%Y-%m-%d %H:%M}" for t in orders] == ["2026-11-17 13:00"]

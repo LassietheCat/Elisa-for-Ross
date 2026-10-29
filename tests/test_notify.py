@@ -217,3 +217,12 @@ def test_openings_too_close_or_on_a_full_day_are_reported_by_date_and_half():
         "Not accepted, already 3 jobs that day: Thu Nov 12 PM."
     )
     assert cycle_message([], day_full=[S("2026-11-12 PM")]).subject == "Elisa: opening Thu Nov 12 PM (day full)"
+
+
+def test_a_refusal_and_an_opening_that_starts_too_soon_are_reported_plainly():
+    refused = ApplyResult(S("2026-11-16 AM"), ApplyOutcome.REFUSED, "refused", clicked=True)
+    message = cycle_message([refused], too_soon=[S("2026-10-27 AM")], notice_hours=2)
+    assert message.subject == "Elisa: refused Mon Nov 16 AM"
+    assert message.text == (
+        "Not accepted, Elisa refused it: Mon Nov 16 AM. Not accepted, too soon (minimum notice 2 hours): Tue Oct 27 AM."
+    )

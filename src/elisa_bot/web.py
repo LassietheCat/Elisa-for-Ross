@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import html
 import json
+import logging
 import secrets
 import time
 from collections import defaultdict, deque
@@ -17,10 +18,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 
 from .config import Settings
-from .models import Slot
+from .models import Half, Slot
 from .notify import Notifier, build_notifier, test_message
-from .state import MAX_JOBS_PER_DAY, BotState, ControlState, ControlStore, StateStore
+from .state import MAX_JOBS_PER_DAY, SERVICE_TYPES, BotState, ControlState, ControlStore, StateStore, off_entries
 from .timeutil import now_in
+
+log = logging.getLogger(__name__)
 
 COOKIE = "elisa_control"
 SESSION_SECONDS = 30 * 24 * 3600
@@ -53,12 +56,15 @@ OUTCOMES = {
     "day off": "skipped, day off",
     "too close": "skipped, too close to another job",
     "day full": "skipped, enough jobs that day",
+    "too soon": "skipped, starts too soon",
+    "refused": "Elisa refused the Accept",
     "gone": "a new opening was gone before the bot could read it",
 }
 FLASH = {
     "sent": "Test alert sent. Check your inbox.",
     "failed": "The test alert could not be sent. Check the email settings.",
     "saved": "Saved.",
+    "types": "Pick at least one job type.",
 }
 
 SECURITY_HEADERS = {
@@ -136,6 +142,12 @@ def _when(text: str | None, tz: str) -> str:
     except ValueError:
         return "unknown"
     return f"{moment:%a %b} {moment.day}, {moment.hour % 12 or 12}:{moment:%M:%S} {moment:%p}"
+
+
+def _day_off_label(entry: str) -> str:
+    text, _, half = entry.partition(" ")
+    day = dt.date.fromisoformat(text)
+    return f"{day:%a %b} {day.day}, {day.year}" + (f", {half} only" if half else "")
 
 
 def _read_status(settings: Settings) -> dict:
@@ -267,23 +279,29 @@ def _status_page(
     parts.append(_right_now(settings, control, state, status_data, now))
     parts.append(_recent_activity(settings, state))
 
-    accepted = sorted((Slot.parse(key) for key in state.applied), reverse=True)[:10]
+    accepted = [
+        Slot.parse(entry["slot"])
+        for entry in reversed(state.activity)
+        if entry.get("outcome") == "applied" and isinstance(entry.get("slot"), str)
+    ][:10]
     items = "".join(f"<li>{slot.label()}</li>" for slot in accepted) or "<li>None yet.</li>"
     parts.append(f'<div class="card"><strong>Accepted recently</strong><ul>{items}</ul></div>')
 
-    days = [dt.date.fromisoformat(day) for day in control.days_off]
     rows = "".join(
-        f'<li><span>{day:%a %b} {day.day}, {day.year}</span><form method="post" action="/days-off">{token}'
-        f'<input type="hidden" name="remove" value="{day.isoformat()}">'
+        f'<li><span>{_day_off_label(entry)}</span><form method="post" action="/days-off">{token}'
+        f'<input type="hidden" name="remove" value="{entry}">'
         '<button class="secondary small" type="submit">Remove</button></form></li>'
-        for day in days
+        for entry in control.days_off
     ) or "<li>None.</li>"
     parts.append(
         '<div class="card"><strong>Days off</strong>'
-        "<p class=\"muted\">The bot doesn't accept jobs on these days.</p>"
+        "<p class=\"muted\">The bot doesn't accept jobs on these days. AM means jobs starting before noon, "
+        "PM noon or later (Eastern time).</p>"
         f'<ul class="plain">{rows}</ul>'
         f'<form class="row" method="post" action="/days-off">{token}'
         f'<input type="date" name="add" min="{now.date().isoformat()}" required aria-label="Day off">'
+        '<select name="part" aria-label="Part of the day"><option value="day">Whole day</option>'
+        '<option value="AM">AM only</option><option value="PM">PM only</option></select>'
         '<button class="secondary" type="submit">Add</button></form></div>'
     )
 
@@ -297,6 +315,16 @@ def _status_page(
         f'<p class="muted">At most this many jobs a day, starting at least {gap:g} hours apart (Eastern time).</p>'
         f'<div class="row"><select id="jobs" name="max_jobs_per_day" aria-label="Jobs per day">{jobs_options}</select>'
         '<button class="secondary" type="submit">Save</button></div></form>'
+    )
+
+    checks = "".join(
+        f'<label><input type="checkbox" name="types" value="{code}"{" checked" if code in control.service_types else ""}> {code}</label>'
+        for code in SERVICE_TYPES
+    )
+    parts.append(
+        f'<form class="card" method="post" action="/job-types">{token}<strong>Job types</strong>'
+        '<p class="muted">The bot accepts only these: VRI (video), OPI (phone), OSI (on site).</p>'
+        f'<div class="row">{checks}<button class="secondary" type="submit">Save</button></div></form>'
     )
 
     choices = sorted({c for c in INTERVAL_CHOICES if settings.min_poll_seconds <= c <= settings.max_poll_seconds}
@@ -432,6 +460,7 @@ def create_control_app(
             return problem
         if data.get("enabled") in ("on", "off"):
             controls.update(by="web", now=clock(), enabled=data["enabled"] == "on")
+            log.info("Page: switched %s", data["enabled"])
         return RedirectResponse("/", status_code=303)
 
     @app.post("/interval")
@@ -443,7 +472,8 @@ def create_control_app(
             seconds = int(data.get("poll_seconds", ""))
         except ValueError:
             return RedirectResponse("/", status_code=303)
-        controls.update(by="web", now=clock(), poll_seconds=seconds)
+        control = controls.update(by="web", now=clock(), poll_seconds=seconds)
+        log.info("Page: calendar interval set to %d s", control.poll_seconds)
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/jobs-per-day")
@@ -455,7 +485,21 @@ def create_control_app(
             count = int(data.get("max_jobs_per_day", ""))
         except ValueError:
             return RedirectResponse("/", status_code=303)
-        controls.update(by="web", now=clock(), max_jobs_per_day=count)
+        control = controls.update(by="web", now=clock(), max_jobs_per_day=count)
+        log.info("Page: jobs per day set to %d", control.max_jobs_per_day)
+        return RedirectResponse("/?msg=saved", status_code=303)
+
+    @app.post("/job-types")
+    async def job_types(request: Request):
+        _, problem = await checked_form(request)
+        if problem is not None:
+            return problem
+        posted = parse_qs((await request.body()).decode("utf-8", "replace")).get("types", [])
+        chosen = [code for code in SERVICE_TYPES if code in {value.strip().upper() for value in posted}]
+        if not chosen:
+            return RedirectResponse("/?msg=types", status_code=303)
+        control = controls.update(by="web", now=clock(), service_types=chosen)
+        log.info("Page: job types set to %s", ", ".join(control.service_types))
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/days-off")
@@ -464,16 +508,27 @@ def create_control_app(
         if problem is not None:
             return problem
 
-        def day(name: str) -> dt.date | None:
+        def day(text: str) -> dt.date | None:
             try:
-                return dt.date.fromisoformat(data.get(name, ""))
+                return dt.date.fromisoformat(text)
             except ValueError:
                 return None
 
-        add, remove = day("add"), day("remove")
+        add = day(data.get("add", ""))
+        part = data.get("part", "").strip().upper()
+        if add is not None and part in (Half.AM.value, Half.PM.value):
+            add = Slot(add, Half(part))
+        try:
+            remove = Slot.parse(data.get("remove", ""))
+        except ValueError:
+            remove = day(data.get("remove", ""))
         if add is None and remove is None:
             return RedirectResponse("/", status_code=303)
-        controls.update(by="web", now=clock(), add_day_off=add, remove_day_off=remove)
+        before = controls.load().days_off_slots()
+        after = controls.update(by="web", now=clock(), add_day_off=add, remove_day_off=remove).days_off_slots()
+        for action, changed in (("added", after - before), ("removed", before - after)):
+            for entry in off_entries(changed):
+                log.info("Page: day off %s: %s", action, entry)
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/test-alert")

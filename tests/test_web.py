@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 from zoneinfo import ZoneInfo
 
@@ -152,7 +153,11 @@ def test_status_shows_last_check_accepted_slots_and_stale_warning(tmp_path):
             baseline_done=True,
             last_run_at="2026-10-09T09:50:00-04:00",
             last_run_ok=True,
-            applied={"2026-10-14 AM": "2026-10-08T11:00:00-04:00"},
+            applied={"2026-10-14 AM": "2026-10-08T11:00:00-04:00", "2026-10-16 AM": "2026-10-08T12:00:00-04:00"},
+            activity=[
+                {"at": "2026-10-08T11:00:00-04:00", "slot": "2026-10-14 AM", "outcome": "applied", "seconds": 3.0},
+                {"at": "2026-10-08T12:00:00-04:00", "slot": "2026-10-16 AM", "outcome": "refused", "seconds": 3.0},
+            ],
         )
     )
     ControlStore(settings).update(by="test", now=NOW, enabled=True)
@@ -161,6 +166,8 @@ def test_status_shows_last_check_accepted_slots_and_stale_warning(tmp_path):
     assert "Last check: Fri Oct 9, 9:50:00 AM (OK)" in page
     assert "No check for 10 min" in page
     assert "<li>Wed Oct 14 AM</li>" in page
+    accepted = page[page.index("Accepted recently"):page.index("Days off")]
+    assert "Fri Oct 16 AM" not in accepted
 
 
 def test_test_alert_button(tmp_path):
@@ -204,6 +211,30 @@ def test_days_off_can_be_added_and_removed(tmp_path):
     assert ControlStore(settings).load().days_off == ["2026-11-26"]
     assert client.post("/days-off", data={"add": "2026-10-22", "csrf": "wrong"}).status_code == 403
     assert ControlStore(settings).load().days_off == ["2026-11-26"]
+
+
+def test_half_days_off_can_be_added_and_removed(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    assert '<option value="AM">AM only</option>' in client.get("/").text
+    client.post("/days-off", data={"add": "2026-10-21", "part": "AM", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "2026-11-26", "part": "pm", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "2026-11-27", "part": "day", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().days_off == ["2026-10-21 AM", "2026-11-26 PM", "2026-11-27"]
+    page = client.get("/").text
+    assert "Wed Oct 21, 2026, AM only" in page and "Thu Nov 26, 2026, PM only" in page and "Fri Nov 27, 2026</span>" in page
+    client.post("/days-off", data={"add": "2026-10-21", "part": "PM", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().days_off == ["2026-10-21", "2026-11-26 PM", "2026-11-27"]
+    client.post("/days-off", data={"remove": "2026-11-26 PM", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().days_off == ["2026-10-21", "2026-11-27"]
+    for line in (
+        "Page: day off added: 2026-10-21 AM",
+        "Page: day off added: 2026-10-21 PM",
+        "Page: day off added: 2026-11-27\n",
+        "Page: day off removed: 2026-11-26 PM",
+    ):
+        assert line in caplog.text
 
 
 def test_right_now_shows_quick_checks_sign_in_alarm_and_today(tmp_path):
@@ -267,3 +298,42 @@ def test_jobs_per_day_can_be_set_between_one_and_four(tmp_path):
     assert ControlStore(settings).load().max_jobs_per_day == 4
     assert client.post("/jobs-per-day", data={"max_jobs_per_day": "1", "csrf": "wrong"}).status_code == 403
     assert ControlStore(settings).load().max_jobs_per_day == 4
+
+
+def test_changes_made_on_the_page_are_logged(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    client.post("/days-off", data={"add": "2026-10-21", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"remove": "2026-10-21", "csrf": csrf_of(client)})
+    client.post("/switch", data={"enabled": "on", "csrf": csrf_of(client)})
+    client.post("/jobs-per-day", data={"max_jobs_per_day": "2", "csrf": csrf_of(client)})
+    client.post("/interval", data={"poll_seconds": "120", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"add": "2026-10-01", "csrf": csrf_of(client)})
+    client.post("/days-off", data={"remove": "2026-12-25", "csrf": csrf_of(client)})
+    assert "2026-10-01" not in caplog.text and "2026-12-25" not in caplog.text
+    for line in (
+        "Page: day off added: 2026-10-21",
+        "Page: day off removed: 2026-10-21",
+        "Page: switched on",
+        "Page: jobs per day set to 2",
+        "Page: calendar interval set to 120 s",
+    ):
+        assert line in caplog.text
+
+
+def test_job_types_can_be_narrowed_on_the_page(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    page = client.get("/").text
+    assert "Job types" in page and page.count('name="types"') == 3
+    client.post("/job-types", data={"types": ["VRI"], "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().service_types == ["VRI"]
+    assert "Page: job types set to VRI" in caplog.text
+    response = client.post("/job-types", data={"csrf": csrf_of(client)}, follow_redirects=False)
+    assert response.headers["location"] == "/?msg=types"
+    assert ControlStore(settings).load().service_types == ["VRI"]
+    client.post("/job-types", data={"types": ["OSI", "VRI"], "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().service_types == ["VRI", "OSI"]
+    assert client.post("/job-types", data={"types": ["OPI"], "csrf": "wrong"}).status_code == 403

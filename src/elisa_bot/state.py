@@ -8,9 +8,10 @@ import os
 import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Iterable
 
 from .config import Settings
-from .models import Slot
+from .models import Half, Slot
 from .timeutil import to_iso
 
 log = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ STATE_VERSION = 1
 ACTIVITY_KEPT = 50
 MAX_DAYS_OFF = 366
 MAX_JOBS_PER_DAY = 4
+SERVICE_TYPES = ("VRI", "OPI", "OSI")
 
 
 @dataclass
@@ -103,20 +105,53 @@ class ControlState:
     updated_by: str | None = None
     days_off: list[str] = field(default_factory=list)
     max_jobs_per_day: int = 3
+    service_types: list[str] = field(default_factory=lambda: list(SERVICE_TYPES))
 
-    def days_off_dates(self) -> set[dt.date]:
-        return {dt.date.fromisoformat(day) for day in self.days_off}
+    def days_off_slots(self) -> frozenset[Slot]:
+        return frozenset(_off_slots(self.days_off))
+
+    def wanted_types(self) -> frozenset[str] | None:
+        wanted = frozenset(self.service_types)
+        return None if wanted >= frozenset(SERVICE_TYPES) else wanted
 
 
 def _valid_days(value: object) -> list[str]:
-    days = set()
-    if isinstance(value, list):
-        for item in value:
+    return off_entries(_off_slots(value)) if isinstance(value, list) else []
+
+
+def _off_slots(entries: Iterable[object]) -> set[Slot]:
+    slots: set[Slot] = set()
+    for item in entries:
+        text = str(item).strip()
+        try:
+            slots.add(Slot.parse(text))
+        except ValueError:
             try:
-                days.add(dt.date.fromisoformat(str(item)).isoformat())
+                slots |= _covered(dt.date.fromisoformat(text))
             except ValueError:
                 continue
-    return sorted(days)[:MAX_DAYS_OFF]
+    return slots
+
+
+def _covered(value: dt.date | Slot) -> set[Slot]:
+    return {value} if isinstance(value, Slot) else {Slot(value, Half.AM), Slot(value, Half.PM)}
+
+
+def off_entries(slots: Iterable[Slot]) -> list[str]:
+    halves: dict[dt.date, set[Half]] = {}
+    for slot in slots:
+        halves.setdefault(slot.date, set()).add(slot.half)
+    return [
+        day.isoformat() if len(found) == 2 else f"{day.isoformat()} {found.pop().value}"
+        for day, found in sorted(halves.items())
+    ][:MAX_DAYS_OFF]
+
+
+def _service_types(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return list(SERVICE_TYPES)
+    chosen = {str(item).strip().upper() for item in value}
+    return [code for code in SERVICE_TYPES if code in chosen] or list(SERVICE_TYPES)
 
 
 def _jobs_per_day(value: object) -> int:
@@ -149,6 +184,7 @@ class ControlStore:
             updated_by=updated_by if isinstance(updated_by, str) else None,
             days_off=_valid_days(data.get("days_off")),
             max_jobs_per_day=_jobs_per_day(data.get("max_jobs_per_day")),
+            service_types=_service_types(data.get("service_types")),
         )
 
     def update(
@@ -158,23 +194,26 @@ class ControlStore:
         now: dt.datetime,
         enabled: bool | None = None,
         poll_seconds: int | None = None,
-        add_day_off: dt.date | None = None,
-        remove_day_off: dt.date | None = None,
+        add_day_off: dt.date | Slot | None = None,
+        remove_day_off: dt.date | Slot | None = None,
         max_jobs_per_day: int | None = None,
+        service_types: list[str] | None = None,
     ) -> ControlState:
         control = self.load()
         if enabled is not None:
             control.enabled = bool(enabled)
         if poll_seconds is not None:
             control.poll_seconds = self.settings.clamp_poll(poll_seconds)
-        days = set(control.days_off)
+        off = _off_slots(control.days_off)
         if add_day_off is not None:
-            days.add(add_day_off.isoformat())
+            off |= _covered(add_day_off)
         if remove_day_off is not None:
-            days.discard(remove_day_off.isoformat())
-        control.days_off = sorted(day for day in days if day >= now.date().isoformat())[:MAX_DAYS_OFF]
+            off -= _covered(remove_day_off)
+        control.days_off = off_entries(slot for slot in off if slot.date >= now.date())
         if max_jobs_per_day is not None:
             control.max_jobs_per_day = _jobs_per_day(max_jobs_per_day)
+        if service_types is not None:
+            control.service_types = _service_types(service_types)
         control.updated_at = to_iso(now)
         control.updated_by = by
         write_json(self.path, asdict(control))

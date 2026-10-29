@@ -43,8 +43,10 @@ DEFAULT_CONFIG = {
     "retry_after": "",
     "schedule_error_times": 0,
     "schedule_error_after": 0,
-    "count_extra_new": 0,
     "list_rate_limited_times": 0,
+    "list_error_times": 0,
+    "list_no_data_times": 0,
+    "accept_delay_ms": 0,
 }
 
 
@@ -79,14 +81,27 @@ class MockState:
         with self.lock:
             self.work_orders = [
                 {"id": str(index), "date": item["date"], "half": item["half"], "status": item["status"],
-                 "time": item.get("time") or ("09:00" if item["half"] == "AM" else "14:00")}
+                 "time": item.get("time") or ("09:00" if item["half"] == "AM" else "14:00"),
+                 "court": item.get("court") or "MOCK1",
+                 "sertype": item.get("sertype") or "VRI"}
                 for index, item in enumerate(items, start=1)
             ]
 
 
+LISTED = ("available", "assigned_listed")
+
+
+def clock_text(time: str) -> str:
+    try:
+        return dt.datetime.strptime(time, "%H:%M").strftime("%I:%M %p") + " EDT"
+    except ValueError:
+        return "time to be confirmed"
+
+
 def order_item(wo: dict) -> dict:
     return {"deldate": f"{wo['date']}T00:00:00.000Z", "sched": wo["time"], "courtTimezone": "America/New_York",
-            "performOpenWO": []}
+            "performOpenWO": [], "status": "Assigned" if wo["status"] == "assigned_listed" else "",
+            "sertype": wo["sertype"]}
 
 
 def create_app(state: MockState) -> FastAPI:
@@ -183,8 +198,14 @@ def create_app(state: MockState) -> FastAPI:
             if state.config["list_rate_limited_times"] > 0:
                 state.config["list_rate_limited_times"] -= 1
                 return JSONResponse({"message": "Too Many Requests"}, status_code=429)
+            if state.config["list_error_times"] > 0:
+                state.config["list_error_times"] -= 1
+                return JSONResponse({"message": "Unexpected server error."}, status_code=500)
+            if state.config["list_no_data_times"] > 0:
+                state.config["list_no_data_times"] -= 1
+                return {"status": True}
             state.stats["open_list_loads"].append(start[:7])
-            data = [order_item(wo) for wo in state.work_orders if wo["status"] == "available" and start <= wo["date"] <= end]
+            data = [order_item(wo) for wo in state.work_orders if wo["status"] in LISTED and start <= wo["date"] <= end]
         return {"status": True, "data": data, "icLangs": ["MOCK"] if data else []}
 
     @app.post("/api/open-work-orders/{client}/interpreter-scheduled-details")
@@ -229,7 +250,6 @@ def create_app(state: MockState) -> FastAPI:
             in_window = [wo for wo in state.work_orders if start <= wo["date"] <= end]
         count = {name: sum(1 for wo in in_window if wo["status"] == status)
                  for status, name in (("assigned", "assigned"), ("applied", "applied"), ("confirmed", "confirmed"), ("available", "new"))}
-        count["new"] += state.config["count_extra_new"]
         return {"status": True, "responseCount": count}
 
     @app.get("/my/dashboard/main-dashboard", response_class=HTMLResponse)
@@ -256,9 +276,13 @@ def create_app(state: MockState) -> FastAPI:
                 state.config["blank_calendar_times"] -= 1
             cells: dict = {}
             for wo in state.work_orders:
-                if wo["status"] in SHOWN_STATUSES and wo["date"].startswith(prefix):
+                status = "available" if wo["status"] in LISTED else wo["status"]
+                if status in SHOWN_STATUSES and wo["date"].startswith(prefix):
                     half = cells.setdefault(wo["date"], {}).setdefault(wo["half"], {})
-                    half[wo["status"]] = half.get(wo["status"], 0) + 1
+                    half[status] = half.get(status, 0) + 1
+                    if status == "available":
+                        courts = half.setdefault("courts", {})
+                        courts[wo["court"]] = courts.get(wo["court"], 0) + 1
             counts = {s: sum(1 for wo in state.work_orders if wo["status"] == s) for s in ("applied", "assigned", "confirmed")}
             today = state.config["today"]
         holidays = {day: name for day, name in HOLIDAYS.items() if day.startswith(prefix)}
@@ -266,14 +290,15 @@ def create_app(state: MockState) -> FastAPI:
                 "cells": cells, "holidays": holidays, "counts": counts}
 
     @app.get("/api/mock/details")
-    async def details(request: Request, slot: str):
+    async def details(request: Request, slot: str, court: str = ""):
         if not signed_in(request):
             return unauthorized()
         day, half = slot.split(" ")
         with state.lock:
             state.stats["details_opened"] += 1
-            open_now = [wo for wo in state.work_orders
-                        if wo["date"] == day and wo["half"] == half and wo["status"] == "available"]
+            open_now = sorted((wo for wo in state.work_orders
+                               if wo["date"] == day and wo["half"] == half and wo["status"] in LISTED
+                               and (not court or wo["court"] == court)), key=lambda wo: wo["time"])
             label = None if state.config["apply_mode"] == "no_button" else state.config["button_label"]
             confirm = state.config["confirm_dialog"]
             style = state.config["details_style"]
@@ -282,7 +307,7 @@ def create_app(state: MockState) -> FastAPI:
             "work_orders": [
                 {"id": wo["id"], "number": f"WO {9990000 + int(wo['id'])}", "court": "CONFIDENTIAL-COURT",
                  "language": "CONFIDENTIAL-LANG", "judge": "CONFIDENTIAL-JUDGE",
-                 "time": dt.datetime.strptime(wo["time"], "%H:%M").strftime("%I:%M %p") + " EDT"}
+                 "time": clock_text(wo["time"]), "sertype": wo["sertype"]}
                 for wo in open_now
             ],
             "button_label": label,
@@ -298,6 +323,8 @@ def create_app(state: MockState) -> FastAPI:
             mode = state.config["apply_mode"]
             if mode == "error":
                 return "error"
+            if (wo is not None and wo["status"] == "assigned_listed") or mode == "refuse":
+                return "refused"
             if wo is None or wo["status"] != "available" or mode == "taken":
                 if wo is not None and mode == "taken":
                     wo["status"] = "taken"
@@ -313,7 +340,7 @@ def create_app(state: MockState) -> FastAPI:
         result = take(wo_id)
         if result == "error":
             return JSONResponse({"message": "Unexpected server error."}, status_code=500)
-        if result == "taken":
+        if result in ("taken", "refused"):
             return JSONResponse({"message": "This work order is no longer available."}, status_code=409)
         return {"message": "Work order accepted successfully."}
 
@@ -325,10 +352,13 @@ def create_app(state: MockState) -> FastAPI:
         data = body.get("data") if isinstance(body, dict) and isinstance(body.get("data"), dict) else {}
         await asyncio.sleep(0.05)
         result = take(str(data.get("coi")))
+        await asyncio.sleep(state.config["accept_delay_ms"] / 1000)
         if result == "error":
             return JSONResponse({"message": "Unexpected server error."}, status_code=500)
         if result == "taken":
             return {"status": False, "message": "COI Is No Longer Available for Assignment. Please refresh your screen and apply!"}
+        if result == "refused":
+            return {"status": False, "message": f"Request could not be completed for COI {9990000 + int(data.get('coi') or 0)}."}
         return {"status": True, "message": "Work Order Accept Successfully"}
 
     return app

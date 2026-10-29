@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 from elisa_bot.config import Settings
 from elisa_bot.detect import openings_in, plan_month
-from elisa_bot.models import Opening, Slot, SlotTags
+from elisa_bot.models import Opening, OpenOrders, Slot, SlotTags
 from elisa_bot.state import BotState
 
 TODAY = dt.date(2026, 10, 7)
@@ -110,15 +110,32 @@ def test_a_day_off_is_never_accepted():
         BotState(baseline_done=True),
         today=TODAY,
         settings=Settings(),
-        days_off={dt.date(2026, 10, 14)},
+        days_off={S("2026-10-14 AM"), S("2026-10-14 PM")},
     )
     assert slots_of(plan.to_apply) == [S("2026-10-15 PM")] and plan.skipped_day_off == [S("2026-10-14 AM")]
 
 
-def test_openings_take_their_times_from_elisas_list_and_keep_badges_without_one():
+def test_a_half_day_off_blocks_only_jobs_starting_in_that_half():
+    slots = {S("2026-11-10 AM"): open_(), S("2026-11-10 PM"): open_()}
+    openings = openings_in(slots, [at("2026-11-10T11:30"), at("2026-11-10T15:00")])
+    plan = plan_month(
+        slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings,
+        job_times={}, days_off={S("2026-11-10 AM")},
+    )
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-10T15:00")]
+    assert plan.skipped_day_off == [S("2026-11-10 AM")]
+    plan = plan_month(
+        slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings,
+        job_times={}, days_off={S("2026-11-10 PM")},
+    )
+    assert [opening.start for opening in plan.to_apply] == [at("2026-11-10T11:30")]
+    assert plan.skipped_day_off == [S("2026-11-10 PM")]
+
+
+def test_openings_come_from_elisas_list_and_badges_only_count_when_the_list_is_missing():
     slots = {S("2026-11-10 AM"): open_(), S("2026-11-10 PM"): open_(), S("2026-11-13 AM"): SlotTags()}
     openings = openings_in(slots, [at("2026-11-10T13:00"), at("2026-11-13T09:00")])
-    assert openings == [Opening(S("2026-11-10 AM")), Opening(S("2026-11-10 PM"), at("2026-11-10T13:00"))]
+    assert openings == [Opening(S("2026-11-10 PM"), at("2026-11-10T13:00"))]
     assert openings_in(slots, None) == [Opening(S("2026-11-10 AM")), Opening(S("2026-11-10 PM"))]
 
 
@@ -171,3 +188,39 @@ def test_an_opening_in_an_already_listed_half_day_is_new_only_if_its_time_is():
     assert plan_month(
         slots, state, today=TODAY, settings=Settings(), openings=openings, known=known, clicked=clicked, job_times=times
     ).to_apply == []
+
+
+def test_when_elisas_list_loaded_a_badge_without_an_open_order_is_not_an_opening():
+    assert openings_in({S("2026-11-16 AM"): open_()}, []) == []
+
+
+def test_a_minimum_notice_skips_openings_that_start_too_soon():
+    slots = {S("2026-10-07 PM"): open_(2)}
+    now = at("2026-10-07T12:00")
+    openings = openings_in(slots, [at("2026-10-07T13:30"), at("2026-10-07T17:00")])
+    state = BotState(baseline_done=True)
+    settings = Settings(min_notice_minutes=120)
+    plan = plan_month(slots, state, today=TODAY, settings=settings, now=now, openings=openings, job_times={TODAY: []})
+    assert [opening.start for opening in plan.to_apply] == [at("2026-10-07T17:00")]
+    assert plan.skipped_too_soon == [S("2026-10-07 PM")]
+    untimed = plan_month(slots, state, today=TODAY, settings=settings, now=now)
+    assert untimed.to_apply == [] and untimed.skipped_too_soon == [S("2026-10-07 PM")]
+    plan = plan_month(slots, state, today=TODAY, settings=Settings(), now=now, openings=openings, job_times={TODAY: []})
+    assert plan.skipped_too_soon == [] and len(plan.to_apply) == 2
+
+
+
+def test_badges_count_only_on_the_date_of_an_order_without_a_time():
+    slots = {S("2026-11-16 AM"): open_(), S("2026-11-20 AM"): open_(), S("2026-11-20 PM"): open_()}
+    orders = OpenOrders((at("2026-11-20T09:30"),), frozenset({dt.date(2026, 11, 20)}))
+    assert openings_in(slots, orders) == [Opening(S("2026-11-20 AM"), at("2026-11-20T09:30")), Opening(S("2026-11-20 PM"))]
+
+
+def test_minimum_notice_uses_the_half_days_earliest_start_without_a_time():
+    slots = {S("2026-10-08 AM"): open_(), S("2026-10-08 PM"): open_()}
+    state = BotState(baseline_done=True)
+    late = at("2026-10-07T22:00")
+    plan = plan_month(slots, state, today=TODAY, settings=Settings(min_notice_minutes=1440), now=late)
+    assert plan.skipped_too_soon == [S("2026-10-08 AM"), S("2026-10-08 PM")]
+    plan = plan_month(slots, state, today=TODAY, settings=Settings(min_notice_minutes=240), now=late)
+    assert plan.skipped_too_soon == [S("2026-10-08 AM")] and slots_of(plan.to_apply) == [S("2026-10-08 PM")]
