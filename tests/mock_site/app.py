@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
     "login_delay_ms": 100,
     "invalid_credentials": False,
     "require_verification": False,
+    "verification_message": "Enter the verification code we sent to your email.",
     "blank_calendar_times": 0,
     "apply_mode": "success",
     "accept_result_status": "applied",
@@ -47,6 +48,7 @@ DEFAULT_CONFIG = {
     "list_error_times": 0,
     "list_no_data_times": 0,
     "accept_delay_ms": 0,
+    "refusal_http_status": 200,
 }
 
 
@@ -101,7 +103,7 @@ def clock_text(time: str) -> str:
 def order_item(wo: dict) -> dict:
     return {"deldate": f"{wo['date']}T00:00:00.000Z", "sched": wo["time"], "courtTimezone": "America/New_York",
             "performOpenWO": [], "status": "Assigned" if wo["status"] == "assigned_listed" else "",
-            "sertype": wo["sertype"]}
+            "sertype": wo["sertype"], "coi": wo["id"], "replocid": "MOCK1"}
 
 
 def create_app(state: MockState) -> FastAPI:
@@ -146,7 +148,7 @@ def create_app(state: MockState) -> FastAPI:
         if (failed := failure()) is not None:
             return failed
         if config["require_verification"]:
-            return JSONResponse({"ok": False, "message": "Enter the verification code we sent to your email."})
+            return JSONResponse({"ok": False, "message": config["verification_message"]})
         if config["invalid_credentials"] or body.get("email") != MOCK_EMAIL or body.get("password") != MOCK_PASSWORD:
             return JSONResponse({"ok": False, "message": "Invalid email or password."}, status_code=401)
         token = secrets.token_hex(16)
@@ -355,10 +357,13 @@ def create_app(state: MockState) -> FastAPI:
         await asyncio.sleep(state.config["accept_delay_ms"] / 1000)
         if result == "error":
             return JSONResponse({"message": "Unexpected server error."}, status_code=500)
+        refusal = state.config["refusal_http_status"]
         if result == "taken":
-            return {"status": False, "message": "COI Is No Longer Available for Assignment. Please refresh your screen and apply!"}
+            message = "COI Is No Longer Available for Assignment. Please refresh your screen and apply!"
+            return JSONResponse({"status": False, "message": message}, status_code=refusal)
         if result == "refused":
-            return {"status": False, "message": f"Request could not be completed for COI {9990000 + int(data.get('coi') or 0)}."}
+            message = f"Request could not be completed for COI {9990000 + int(data.get('coi') or 0)}."
+            return JSONResponse({"status": False, "message": message}, status_code=refusal)
         return {"status": True, "message": "Work Order Accept Successfully"}
 
     return app

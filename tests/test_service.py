@@ -644,3 +644,11 @@ async def test_the_always_on_bot_writes_a_private_status_file_for_the_page(mock,
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
+
+
+async def test_the_start_times_of_new_orders_are_handed_on_once(tmp_path):
+    quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
+    session = ListingSession([A], [A, B, C, None])
+    await quick.check(session)
+    assert await quick.check(session) is True
+    assert quick.take_fresh() == [B, C] and quick.take_fresh() == []

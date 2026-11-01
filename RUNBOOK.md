@@ -152,6 +152,9 @@ when Elisa lists a new open work order or refuses one.
 - **New jobs on the calendar:** `journalctl -u elisa-bot | grep "on the calendar"` lists
   every new, removed or changed job (date and AM/PM), with times, from the calendar
   reads (within about 3 minutes).
+- **Fast accept:** `journalctl -u elisa-bot | grep -E "Fast accept ready|straight from"` shows
+  when the bot learned Elisa's Accept request after starting, and each opening accepted
+  straight from the open-order list.
 - **Live channel:** `journalctl -u elisa-bot | grep "Live channel"` shows the websocket
   connecting after each sign-in, the page joining its work-order rooms, each order
   assigned to someone (and whether the bot had seen it open), and any other event,
@@ -168,9 +171,10 @@ when Elisa lists a new open work order or refuses one.
 
 | Email | Meaning | Do |
 |---|---|---|
-| Bot switched off (sign-in problem) | Elisa rejected the password or asked for a verification step. The bot stopped itself and won't retry. | Sign in by hand once; update the secret file; restart; switch on. |
+| Bot switched off (sign-in problem) | Elisa rejected the password. The bot stopped itself and won't retry. | Sign in by hand once; update the secret file; restart; switch on. |
+| Bot switched off (Elisa's robot check) | Elisa asked for a robot check or a code at sign-in (reCAPTCHA since Oct 31). The bot stopped itself and won't retry. | Leave it off. Don't restart it or press ON: each sign-in attempt meets the same check, and Elisa disables accounts after too many failed sign-ins. |
 | Bot can't check right now | 3 checks in a row failed. | Usually fixes itself ("working again" follows). If not within 30 minutes: read the log, then `elisa-bot off`, `elisa-bot site-check`, `elisa-bot on`. |
-| Please check | Accept was clicked but Elisa's answer didn't come or was an error. | Look at Elisa. |
+| Please check | Accept was sent but Elisa's answer didn't come, or was a server error, a rate limit or a sign-in error. | Look at Elisa. |
 | Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
 | Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
 | Bot may be missing openings | A calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |

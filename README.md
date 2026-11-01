@@ -61,10 +61,12 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   - **Quick check, every `QUICK_CHECK_SECONDS` (30):** it asks Elisa for the open work
     orders in all the months it checks, in one request: the open-order list request the
     calendar page itself makes, replayed with the bot's date range. When an order is
-    listed that wasn't in the previous answer, the bot reads that order's month at once
-    and accepts it under the usual rules. Openings are often taken within 1–3 minutes,
-    so this is what makes the bot fast. The answer holds job details; the bot keeps only
-    each order's start time, in memory. (Elisa's count request, used until Oct 26, always
+    listed that wasn't in the previous answer, the bot accepts it at once under the usual
+    rules with Elisa's own Accept request (see "Accepting straight from the list" below),
+    then reads that order's month. Some orders were gone 2–4 seconds after the bot saw
+    them (Oct 28–29), so this is what makes the bot fast. The answer holds job details; the bot
+    keeps only each order's start time, and for the Accept the order's ID and court code,
+    in memory, never stored or logged. (Elisa's count request, used until Oct 26, always
     answers 0 open orders for an interpreter account, so it found nothing.)
   - **Calendar read, every `POLL_SECONDS` (60 by default, never below
     `MIN_POLL_SECONDS`, 15):** it reads one month, sweeping one month at a time
@@ -125,8 +127,11 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   pings stop and the outside monitor emails you. The bot can't send its own alert when
   its whole server is down.
 - **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
-- **Sign-in rejected** (wrong password or a verification step): it switches itself
-  off, emails one alert, and never retries, so the account can't be locked out.
+- **Sign-in rejected** (wrong password, a verification code, or a robot check such as
+  Elisa's "We could not verify you are not a robot"): it switches itself off, emails
+  one alert, and never retries, so the account can't be locked out. Since Oct 31 Elisa
+  scores every sign-in with Google reCAPTCHA Enterprise before trying the password; it
+  stopped the bot's sign-in, and the bot does not try to get past it.
 - **A check fails** (the page or the calendar didn't load): it reloads the dashboard. A
   reload is a burst of requests like a sign-in, so it waits at least
   `QUIET_AFTER_SIGN_IN_SECONDS` before the next try, longer if failures repeat (up
@@ -279,13 +284,32 @@ it again.
   itself). For an on-site job Elisa first shows the driving distance; the bot answers
   **Continue**. It then reads Elisa's own answer to the request (`status` true or
   false): true is "Applied"; false with "No Longer Available" is "Missed"; any other
-  false is "Elisa refused it"; no answer or an HTTP error is "please check". A taken
+  false is "Elisa refused it". An HTTP 4xx answer with a message is read the same way,
+  as Elisa's own page does (it shows that message in red): until Oct 30 those were
+  emailed as "please check" although nothing was booked. No answer, a server error
+  (5xx), a rate limit (429) or a sign-in error (401/403) is still "please check". A taken
   order can sit next to the open one (Elisa still shows Accept for an Assigned order),
   so after a refusal or "No Longer Available" the bot tries the next matching row,
   then the next badge in the half-day, up to 3 tries, and stops at the first success.
   Elisa assigns the job the moment it is accepted, and an assigned job can only be
   withdrawn by emailing SOSi, so every Accept is binding. If Elisa shows a pop-up
   window instead of the list, the bot uses the Accept button in that window.
+- **Accepting straight from the list:** an Accept is one request the page sends (the
+  order's ID and court code, and "ACCEPT"). The bot learns that request the first time
+  it clicks Accept after it starts (even an Accept Elisa turns down), only from a
+  request with nothing else in it but the client ID, and logs "Fast accept ready"
+  (otherwise "Elisa's Accept request has an unexpected form"). From then on, when the quick check sees a new order, the bot sends that
+  same request with the new order's ID and court code before reading the calendar
+  ("Opening …: applied, straight from the open-order list"). It does so only when the
+  bot is live, the order has a start time, its month isn't on its first look, and her
+  jobs that day from Elisa's job-details request match the last calendar read of that
+  day; the usual rules decide (job type, days off, minimum notice, jobs per day, 3 hours
+  apart, 10 a day). Everything else is left to the calendar read and the Accept button.
+  Only "Applied" and "please check" answers are final; if Elisa answers "No Longer
+  Available" or turns the request down, the bot logs it and leaves the order to the
+  calendar read and the Accept button, exactly as before. A 429 refusal stops the check
+  and the bot waits longer, as for any other refused request. The calendar read that
+  follows shows the new job on her calendar.
 - **Missed openings are reported:** if a calendar tag or Elisa's open-order list can't
   be read, one "the bot may be missing openings" email goes out.
 - **Minimum notice** (`MIN_NOTICE_MINUTES`, 0 = off): openings that start sooner than

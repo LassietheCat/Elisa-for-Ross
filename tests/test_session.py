@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import logging
 
 import pytest
 
@@ -43,6 +44,13 @@ async def test_verification_step_stops_the_run(mock, session):
     mock.configure(require_verification=True)
     with pytest.raises(VerificationRequired):
         await session.ensure_ready()
+
+
+async def test_elisa_robot_check_stops_after_one_attempt(mock, session):
+    mock.configure(require_verification=True, verification_message="We could not verify you are not a robot. Please try again.")
+    with pytest.raises(VerificationRequired):
+        await session.ensure_ready()
+    assert mock.stats()["login_attempts"] == 1
 
 
 async def test_signs_out_through_the_user_menu(mock, session):
@@ -155,3 +163,40 @@ async def test_only_wanted_job_types_are_listed(mock, session):
     session.service_types = frozenset({"VRI"})
     orders = await session.open_orders(OCT_1, DEC_31, TODAY)
     assert [f"{t:%Y-%m-%d %H:%M}" for t in orders] == ["2026-11-17 13:00"]
+
+
+async def test_the_pages_own_accept_is_learned_then_replayed_for_a_listed_order(mock, session, caplog):
+    caplog.set_level(logging.INFO)
+    mock.set_work_orders([wo("2026-11-17", "PM", "available", "13:00"), wo("2026-11-18", "AM", "available", "09:00")])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    first, second = sorted(await session.open_orders(OCT_1, DEC_31, TODAY))
+    assert session.listed_count(second) == 1
+    assert await session.accept_listed(second) is None
+    await session.page.evaluate("onAccept('1', false)")
+    await asyncio.sleep(0.2)
+    assert "Fast accept ready" in caplog.text
+    status, data = await session.accept_listed(second)
+    assert status == 200 and data["status"] is True
+    assert mock.stats()["accept_calls"] == ["1", "2"]
+    assert await session.accept_listed(second, 1) is None
+
+
+async def test_only_the_pages_plain_accept_is_learned_and_a_refused_replay_is_busy(mock, session, caplog):
+    caplog.set_level(logging.INFO)
+    mock.set_work_orders([wo("2026-11-17", "PM", "available", "13:00"), wo("2026-11-18", "AM", "available", "09:00")])
+    await session.ensure_ready()
+    await asyncio.sleep(0.5)
+    first, second = sorted(await session.open_orders(OCT_1, DEC_31, TODAY))
+    await session.page.evaluate(
+        "api('/api/open-work-orders/mock-client/create', {method: 'POST', headers: {'Content-Type': 'application/json'},"
+        " body: JSON.stringify({_id: 'mock-client', data: {coi: '9', replocId: 'MOCK1', status: 'WITHDRAW'}})})"
+    )
+    await asyncio.sleep(0.2)
+    assert "Fast accept ready" not in caplog.text and not session.fast_accept_ready
+    await session.page.evaluate("onAccept('1', false)")
+    await asyncio.sleep(0.2)
+    assert session.fast_accept_ready
+    mock.configure(apply_mode="refuse", refusal_http_status=429)
+    with pytest.raises(SiteBusy):
+        await session.accept_listed(second)

@@ -243,3 +243,36 @@ async def test_only_a_row_of_a_wanted_job_type_is_accepted(mock, session):
     result = await applier.apply_one(Opening(S("2026-10-15 PM"), at("2026-10-15T14:00")))
     assert (result.outcome, result.clicked) == (ApplyOutcome.ERROR, False)
     assert mock.stats()["accept_calls"] == ["2"]
+
+
+async def test_an_accept_elisa_answers_with_http_400_as_gone_is_missed(mock, session):
+    mock.configure(apply_mode="taken", refusal_http_status=400)
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(S("2026-10-14 AM"))
+    assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.MISSED, "taken", True)
+
+
+async def test_an_accept_elisa_answers_with_http_400_otherwise_is_refused(mock, session, caplog):
+    caplog.set_level(logging.INFO)
+    mock.configure(apply_mode="refuse", refusal_http_status=400)
+    mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+    applier = await make_applier(session, test_mode=False)
+    result = await applier.apply_one(S("2026-10-14 AM"))
+    assert (result.outcome, result.code, result.clicked) == (ApplyOutcome.REFUSED, "refused", True)
+    assert "Elisa refused the Accept for 2026-10-14 AM (HTTP 400): request could not be completed for coi" in caplog.text
+    assert "9990001" not in caplog.text
+
+
+def test_answers_that_prove_nothing_still_ask_the_owner_to_check():
+    applier = Applier(None, Selectors(), None, test_mode=False)
+    slot = S("2026-10-14 AM")
+    for status, data in (
+        (429, {"message": "Too many requests"}),
+        (401, {"message": "Unauthorized"}),
+        (400, None),
+        (502, {"message": "Bad gateway"}),
+    ):
+        assert applier.answer(slot, status, data).outcome is ApplyOutcome.UNVERIFIED
+    assert applier.answer(slot, 0, None).code == "no_answer"
+    assert applier.answer(slot, 409, {"message": "Already assigned"}).outcome is ApplyOutcome.MISSED

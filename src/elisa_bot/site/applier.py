@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 ACCEPT_ANSWER_S = 10
 MAX_TRIES = 3
+_UNSURE_HTTP = frozenset({401, 403, 408, 429})
 _SEEN_ATTR = "data-elisa-bot-seen"
 _SAME_WINDOW_JS = "(el, other) => el === other || el.contains(other) || other.contains(el)"
 _ROW_JS = r"""(el, row) => {
@@ -185,16 +186,26 @@ class Applier:
             data = await response.json()
         except (PlaywrightError, ValueError):
             data = None
+        return self.answer(slot, response.status, data)
+
+    def answer(self, slot: Slot, status: int, data: object) -> ApplyResult:
+        if status == 0:
+            log.warning("Sent the Accept for %s but Elisa's answer didn't come", slot)
+            return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "no_answer", clicked=True)
+        ok = 200 <= status < 300
         message = str(data.get("message") or "") if isinstance(data, dict) else ""
-        if response.ok and isinstance(data, dict) and data.get("status") is True:
+        if ok and isinstance(data, dict) and data.get("status") is True:
             return ApplyResult(slot, ApplyOutcome.APPLIED, "", clicked=True)
-        if response.ok and self._taken_re.search(message):
+        answered = ok or (400 <= status < 500 and status not in _UNSURE_HTTP and bool(message))
+        if answered and self._taken_re.search(message):
             return ApplyResult(slot, ApplyOutcome.MISSED, "taken", clicked=True)
-        if response.ok and isinstance(data, dict) and data.get("status") is False:
-            log.info("Elisa refused the Accept for %s: %s", slot, describe_refusal(message))
+        if answered and (not ok or isinstance(data, dict) and data.get("status") is False):
+            log.info(
+                "Elisa refused the Accept for %s%s: %s", slot, "" if ok else f" (HTTP {status})", describe_refusal(message)
+            )
             return ApplyResult(slot, ApplyOutcome.REFUSED, "refused", clicked=True)
-        if not response.ok:
-            log.warning("Elisa answered the Accept for %s with HTTP %d", slot, response.status)
+        if not ok:
+            log.warning("Elisa answered the Accept for %s with HTTP %d", slot, status)
         return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "site_reported_problem", clicked=True)
 
     async def _wait_for_accepts(

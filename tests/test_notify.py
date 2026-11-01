@@ -135,6 +135,12 @@ def test_paused_message_explains_what_to_do():
     assert "invalid_credentials" in message.text and "switch the bot back on" in message.text
 
 
+def test_robot_check_message_says_not_to_switch_back_on():
+    message = paused_message("verification_required")
+    assert message.subject == "Elisa: bot switched off (Elisa's robot check)"
+    assert "password is fine" in message.text and "don't switch the bot back on" in message.text
+
+
 OWNER = "owner@example.test"
 APP_PASSWORD = "app-password-1234"
 

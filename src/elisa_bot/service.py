@@ -74,11 +74,13 @@ class QuickCheck:
         self.hot_months: list[tuple[int, int]] | None = None
         self.detected_at: float | None = None
         self.orders: Counter[dt.datetime | None] | None = None
+        self.fresh: list[dt.datetime] = []
         self.next_at: float | None = None
 
     def reset(self) -> None:
         self.known = None
         self.orders = None
+        self.fresh = []
         self.paused = False
         self.misses = 0
         self.next_at = None
@@ -136,6 +138,7 @@ class QuickCheck:
         if not added:
             return False
         self.detected_at = time.monotonic()
+        self.fresh = sorted(start for start in added if start is not None)
         self.hot_months = None if None in added else sorted({(start.year, start.month) for start in added})
         log.info(
             "Elisa lists %d new open work order(s) in the months checked; reading %s now",
@@ -155,6 +158,10 @@ class QuickCheck:
         hot, detected = self.hot_months, self.detected_at
         self.hot_months, self.detected_at = None, None
         return hot, detected
+
+    def take_fresh(self) -> list[dt.datetime]:
+        fresh, self.fresh = self.fresh, []
+        return fresh
 
 
 class Heartbeat:
@@ -314,6 +321,7 @@ async def run_forever(
                     quick.reset()
                 month = None if read_all else rotation.next(target_months(clock().date(), settings.months_to_check))
                 hot, detected_at = quick.take_hot() if read_all else (None, None)
+                fresh = quick.take_fresh()
                 read_all = False
                 report = await run_once(
                     settings,
@@ -324,6 +332,7 @@ async def run_forever(
                     month=month,
                     only=hot,
                     detected_at=detected_at,
+                    fresh=fresh,
                 )
                 quick.calendar_read()
                 heartbeat.healthy()

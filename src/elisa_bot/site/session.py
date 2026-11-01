@@ -65,6 +65,13 @@ def _date_range(body: dict) -> dict | None:
     return None
 
 
+def _order_fields(body: dict) -> dict | None:
+    for value in (body, *body.values()):
+        if isinstance(value, dict) and "coi" in value and "replocId" in value:
+            return value
+    return None
+
+
 class SignInLimiter:
     def __init__(self, per_hour: int, *, clock: Callable[[], float] = time.monotonic):
         self.per_hour = per_hour
@@ -115,6 +122,9 @@ class SiteSession:
         self._open_orders: dict[str, tuple[int, OpenOrders]] = {}
         self._order_reads: list[asyncio.Future] = []
         self._schedule_request: tuple[str, dict] | None = None
+        self._accept_request: tuple[str, dict] | None = None
+        self._accept_api = re.compile(selectors.accept_api_re)
+        self._listed: dict[dt.datetime, list[tuple[object, object]]] = {}
         self.tz = ZoneInfo(settings.timezone)
         self.live = LiveChannel(self.tz)
         self.open_times: dict[Slot, set[str]] = {}
@@ -266,6 +276,9 @@ class SiteSession:
         if request.method != "POST" or request.resource_type not in _WATCHED_TYPES:
             return
         path = urlsplit(request.url).path
+        if self._accept_api.search(path):
+            self._learn_accept(request)
+            return
         if path.endswith(self.sel.open_list_api):
             self._note_list_load(request)
         elif path.endswith(self.sel.schedule_api):
@@ -278,6 +291,19 @@ class SiteSession:
         elif not path.endswith(self.sel.counts_api):
             return
         asyncio.ensure_future(self._remember_headers(request))
+
+    def _learn_accept(self, request: Request) -> None:
+        try:
+            body = request.post_data_json
+        except (PlaywrightError, ValueError):
+            return
+        fields = _order_fields(body) if isinstance(body, dict) else None
+        if fields is None or fields.get("status") != "ACCEPT" or not set(fields) <= {"_id", "coi", "replocId", "status"}:
+            self.warn_once(("fast accept", "form"), "Elisa's Accept request has an unexpected form; accepting through the calendar")
+            return
+        if self._accept_request is None:
+            log.info("Fast accept ready: new openings can now be accepted with Elisa's own Accept request, without the calendar")
+        self._accept_request = (request.url, body)
 
     async def _remember_headers(self, request: Request) -> None:
         try:
@@ -317,9 +343,49 @@ class SiteSession:
         items = data.get("data") if isinstance(data, dict) else None
         if not isinstance(items, list):
             return None
-        return [
-            start_time(item, self.tz) for item in items if isinstance(item, dict) and not _taken(item) and self._wanted(item)
-        ]
+        starts: list[dt.datetime | None] = []
+        listed: dict[dt.datetime, list[tuple[object, object]]] = {}
+        for item in items:
+            if not isinstance(item, dict) or _taken(item) or not self._wanted(item):
+                continue
+            moment = start_time(item, self.tz)
+            starts.append(moment)
+            if moment is not None and item.get("coi") is not None and item.get("replocid") is not None:
+                listed.setdefault(moment, []).append((item["coi"], item["replocid"]))
+        self._listed = listed
+        return starts
+
+    @property
+    def fast_accept_ready(self) -> bool:
+        return self._accept_request is not None and self._api_headers is not None
+
+    def listed_count(self, start: dt.datetime) -> int:
+        return len(self._listed.get(start, ()))
+
+    async def accept_listed(self, start: dt.datetime, index: int = 0) -> tuple[int, object] | None:
+        orders = self._listed.get(start, [])
+        if self._page is None or self._accept_request is None or self._api_headers is None or index >= len(orders):
+            return None
+        url, template = self._accept_request
+        body = copy.deepcopy(template)
+        fields = _order_fields(body)
+        fields["coi"], fields["replocId"] = orders[index]
+        try:
+            response = await self._page.context.request.post(
+                url, headers=self._api_headers, data=json.dumps(body), timeout=10_000
+            )
+        except PlaywrightError:
+            return 0, None
+        if response.status in (401, 403):
+            self._api_headers = None
+            return None
+        if response.status == 429:
+            raise SiteBusy("the site answered 429 Too Many Requests", retry_after=parse_retry_after(response.headers.get("retry-after")))
+        try:
+            data = await response.json()
+        except (PlaywrightError, ValueError):
+            data = None
+        return response.status, data
 
     def _wanted(self, item: dict) -> bool:
         return self.service_types is None or str(item.get("sertype") or "").strip().upper() in self.service_types
@@ -406,7 +472,7 @@ class SiteSession:
                 raise self._problem
             text = await self._page_text()
             if verification.search(text):
-                raise VerificationRequired("the site asked for a verification step")
+                raise VerificationRequired("the site asked for a robot check or a verification code")
             if rejected.search(text):
                 raise InvalidCredentials("the site rejected the email or password")
             if loop.time() > deadline:

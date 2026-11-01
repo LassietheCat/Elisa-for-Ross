@@ -8,14 +8,14 @@ from typing import AbstractSet, Callable
 
 from .config import Settings
 from .detect import jobs_per_day, new_openings, openings_in, plan_month
-from .models import ApplyOutcome, ApplyResult, MonthReading, Opening, Slot, SlotTags
+from .models import JOB_STATUSES, ApplyOutcome, ApplyResult, MonthReading, Opening, Slot, SlotTags
 from .notify import Notifier, build_notifier, cycle_message, missed_openings_message
-from .site.applier import Applier
+from .site.applier import MAX_TRIES, Applier
 from .site.calendar import CalendarReader
 from .site.errors import CalendarNotRendered, InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SiteSession
-from .state import BotState, ControlStore, StateStore
+from .state import BotState, ControlState, ControlStore, StateStore
 from .timeutil import add_months, now_in, short_time, to_iso
 
 log = logging.getLogger(__name__)
@@ -92,6 +92,7 @@ async def run_once(
     month: tuple[int, int] | None = None,
     only: list[tuple[int, int]] | None = None,
     detected_at: float | None = None,
+    fresh: list[dt.datetime] | None = None,
 ) -> CycleReport:
     clock = _clock(settings, now)
     store = StateStore(settings.state_path)
@@ -120,6 +121,11 @@ async def run_once(
         report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
         applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode, service_types=session.service_types)
+        if fresh and not settings.test_mode:
+            await _accept_fresh(
+                session, applier, state, settings, control, fresh, report,
+                today=today, clock=clock, detected_at=detected_at, days_off=days_off,
+            )
         shown = await _shown_month(reader, session)
         if month is None:
             targets = [m for m in window if only and m in only] or list(window)
@@ -161,7 +167,6 @@ async def run_once(
                 clicked=session.clicked,
                 job_times=job_times,
                 max_jobs=control.max_jobs_per_day,
-                already_planned=len(report.results),
                 baseline=baseline,
                 days_off=days_off,
             )
@@ -187,21 +192,8 @@ async def run_once(
                 for slot in slots:
                     state.add_activity(to_iso(clock()), str(slot), outcome, _since(detected_at))
             for opening in plan.to_apply:
-                slot = opening.slot
                 result = await applier.apply_one(opening)
-                seconds = _since(detected_at)
-                log.info(
-                    "Opening %s: %s%s%s",
-                    slot,
-                    result.outcome.value,
-                    f" ({result.code})" if result.code else "",
-                    f", {seconds} s after the quick check saw it" if seconds is not None else "",
-                )
-                state.add_activity(to_iso(clock()), str(slot), result.outcome.value, seconds)
-                report.results.append(result)
-                if result.clicked:
-                    state.record_apply(slot, clock())
-                    session.clicked.add((slot, opening.clock))
+                _record(state, report, session, opening, result, clock(), _since(detected_at))
         if missed:
             await notifier.send(missed_openings_message(missed))
     except Exception as exc:
@@ -264,6 +256,127 @@ async def run_once(
         report.skipped_too_soon,
     )
     return report
+
+
+async def _accept_fresh(
+    session: SiteSession,
+    applier: Applier,
+    state: BotState,
+    settings: Settings,
+    control: ControlState,
+    fresh: list[dt.datetime],
+    report: CycleReport,
+    *,
+    today: dt.date,
+    clock: Clock,
+    detected_at: float | None,
+    days_off: AbstractSet[Slot],
+) -> None:
+    session.live.saw_open(Opening.at(start).slot for start in fresh)
+    if not session.fast_accept_ready:
+        return
+    for year, month_number in sorted({(start.year, start.month) for start in fresh}):
+        key = month_key((year, month_number))
+        snapshot = state.jobs.get(key)
+        if key in state.baseline_pending or not isinstance(snapshot, dict):
+            continue
+        slots = _snapshot_slots(snapshot)
+        booked = jobs_per_day(slots)
+        openings = [
+            opening
+            for opening in map(Opening.at, fresh)
+            if (opening.slot.date.year, opening.slot.date.month) == (year, month_number)
+            and opening.slot.date >= today
+            and opening.slot not in days_off
+        ]
+        times: dict[dt.date, list[dt.datetime] | None] = {}
+        for day in sorted({opening.slot.date for opening in openings}):
+            times[day] = await session.job_times(day, today)
+        ready = [
+            opening
+            for opening in openings
+            if times.get(opening.slot.date) is not None and len(times[opening.slot.date]) == booked[opening.slot.date]
+        ]
+        plan = plan_month(
+            slots,
+            state,
+            today=today,
+            settings=settings,
+            now=clock(),
+            openings=ready,
+            known=session.open_times,
+            clicked=session.clicked,
+            job_times=times,
+            max_jobs=control.max_jobs_per_day,
+            baseline=False,
+            days_off=days_off,
+        )
+        for opening in plan.to_apply:
+            result = await _accept_listed(session, applier, opening)
+            if result is None:
+                continue
+            seconds = _since(detected_at)
+            if result.outcome in (ApplyOutcome.MISSED, ApplyOutcome.REFUSED):
+                log.info(
+                    "Opening %s: %s straight from the open-order list%s; leaving it to the calendar",
+                    opening.slot,
+                    result.outcome.value,
+                    f", {seconds} s after the quick check saw it" if seconds is not None else "",
+                )
+                continue
+            _record(state, report, session, opening, result, clock(), seconds, ", straight from the open-order list")
+            report.new.add(opening.slot)
+
+
+def _record(
+    state: BotState,
+    report: CycleReport,
+    session: SiteSession,
+    opening: Opening,
+    result: ApplyResult,
+    now: dt.datetime,
+    seconds: float | None,
+    how: str = "",
+) -> None:
+    log.info(
+        "Opening %s: %s%s%s%s",
+        opening.slot,
+        result.outcome.value,
+        f" ({result.code})" if result.code else "",
+        how,
+        f", {seconds} s after the quick check saw it" if seconds is not None else "",
+    )
+    state.add_activity(to_iso(now), str(opening.slot), result.outcome.value, seconds)
+    report.results.append(result)
+    if result.clicked:
+        state.record_apply(opening.slot, now)
+        session.clicked.add((opening.slot, opening.clock))
+
+
+async def _accept_listed(session: SiteSession, applier: Applier, opening: Opening) -> ApplyResult | None:
+    if not session.listed_count(opening.start):
+        session.warn_once(("fast accept", "no order id"), "Elisa's open-order list gave no order ID; accepting through the calendar")
+        return None
+    result = None
+    for index in range(min(MAX_TRIES, session.listed_count(opening.start))):
+        answer = await session.accept_listed(opening.start, index)
+        if answer is None:
+            break
+        result = applier.answer(opening.slot, *answer)
+        if result.outcome is not ApplyOutcome.MISSED:
+            break
+    return result
+
+
+def _snapshot_slots(snapshot: dict) -> dict[Slot, SlotTags]:
+    slots = {}
+    saved = snapshot.get("slots")
+    for text, jobs in (saved if isinstance(saved, dict) else {}).items():
+        try:
+            slots[Slot.parse(text)] = SlotTags(**{status: int(jobs.get(status, 0)) for status in JOB_STATUSES})
+        except (AttributeError, TypeError, ValueError):
+            continue
+    return slots
 
 
 async def _job_times(

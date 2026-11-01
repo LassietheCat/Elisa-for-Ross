@@ -23,7 +23,7 @@ class Selectors:
     password_input: str = "input[type=password]"
     login_button: str = "button[type=submit]"
     login_error_re: str = r"(invalid|incorrect|wrong|not match|not recognized|failed|locked|disabled)"
-    verification_re: str = r"(captcha|verification code|one[- ]time|two[- ]factor|2fa|enter the code)"
+    verification_re: str = r"(captcha|not a robot|verification code|one[- ]time|two[- ]factor|2fa|enter the code)"
 
     open_work_orders_tab: str = 'a:visible:text-is("Open Work Orders")'
     status_button: str = (

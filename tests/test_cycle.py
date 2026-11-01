@@ -35,6 +35,24 @@ async def run(settings, capture, session=None, month=None):
     return await run_once(settings, Selectors(), notifier=capture, now=fixed_now, session=session, month=month)
 
 
+async def quick_check_then_read(settings, capture, session, month=(2026, 10)):
+    starts = await session.open_orders(dt.date(2026, 10, 1), dt.date(2026, 12, 31), fixed_now().date())
+    fresh = sorted(start for start in starts if start is not None)
+    return await run_once(
+        settings, Selectors(), notifier=capture, now=fixed_now, session=session,
+        only=[month], detected_at=time.monotonic(), fresh=fresh,
+    )
+
+
+async def learned_accept(mock, settings, capture) -> SiteSession:
+    session = await signed_in(settings)
+    await run(settings, capture, session)
+    mock.set_work_orders([wo("2026-10-20", "AM", "available", "09:00")])
+    report = await quick_check_then_read(settings, capture, session)
+    assert [r.outcome for r in report.results] == [ApplyOutcome.APPLIED]
+    return session
+
+
 def november_first():
     return fixed_now().replace(month=11, day=1)
 
@@ -546,5 +564,123 @@ async def test_only_wanted_job_types_are_accepted(mock, tmp_path):
         assert [str(r.slot) for r in report.results] == ["2026-11-19 AM"]
         assert mock.stats()["accept_calls"] == ["3"]
         assert [m.subject for m in capture.messages] == ["Elisa: applied Thu Nov 19 AM"]
+    finally:
+        await session.close()
+
+
+async def test_once_the_accept_is_learned_a_new_order_is_accepted_straight_from_the_list(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        assert "Fast accept ready" in caplog.text and "straight from the open-order list" not in caplog.text
+        opened = mock.stats()["details_opened"]
+        mock.set_work_orders([wo("2026-10-20", "AM", "assigned", "09:00"), wo("2026-10-15", "PM", "available", "14:00")])
+        report = await quick_check_then_read(settings, capture, session)
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-15 PM", ApplyOutcome.APPLIED)]
+        assert "Opening 2026-10-15 PM: applied, straight from the open-order list" in caplog.text
+        assert "was gone" not in caplog.text
+        assert mock.stats()["accept_calls"] == ["1", "2"] and mock.stats()["details_opened"] == opened
+        assert capture.messages[-1].subject == "Elisa: applied Thu Oct 15 PM"
+    finally:
+        await session.close()
+
+
+async def test_accepting_straight_from_the_list_keeps_the_three_hour_rule(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        mock.set_work_orders([wo("2026-10-20", "AM", "assigned", "09:00"), wo("2026-10-14", "AM", "assigned", "09:00")])
+        await run(settings, capture, session, month=(2026, 10))
+        mock.set_work_orders([
+            wo("2026-10-20", "AM", "assigned", "09:00"),
+            wo("2026-10-14", "AM", "assigned", "09:00"),
+            wo("2026-10-14", "AM", "available", "10:00"),
+            wo("2026-10-14", "PM", "available", "13:00"),
+        ])
+        report = await quick_check_then_read(settings, capture, session)
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-14 PM", ApplyOutcome.APPLIED)]
+        assert "Opening 2026-10-14 PM: applied, straight from the open-order list" in caplog.text
+        assert mock.stats()["accept_calls"] == ["1", "4"]
+    finally:
+        await session.close()
+
+
+async def test_a_calendar_snapshot_that_disagrees_with_her_jobs_leaves_the_decision_to_the_calendar(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        opened = mock.stats()["details_opened"]
+        mock.set_work_orders([
+            wo("2026-10-20", "AM", "assigned", "09:00"),
+            wo("2026-10-14", "AM", "assigned", "09:00"),
+            wo("2026-10-14", "PM", "available", "13:00"),
+        ])
+        report = await quick_check_then_read(settings, capture, session)
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-14 PM", ApplyOutcome.APPLIED)]
+        assert "straight from the open-order list" not in caplog.text
+        assert mock.stats()["accept_calls"] == ["1", "3"] and mock.stats()["details_opened"] > opened
+    finally:
+        await session.close()
+
+
+async def test_an_order_turned_down_straight_from_the_list_goes_to_the_calendar_as_before(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        mock.configure(apply_mode="refuse", refusal_http_status=400)
+        mock.set_work_orders([wo("2026-10-20", "AM", "assigned", "09:00"), wo("2026-10-15", "PM", "available", "14:00")])
+        report = await quick_check_then_read(settings, capture, session)
+        assert "Opening 2026-10-15 PM: refused straight from the open-order list" in caplog.text
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-15 PM", ApplyOutcome.REFUSED)]
+        assert mock.stats()["accept_calls"] == ["1", "2", "2"]
+    finally:
+        await session.close()
+
+
+async def test_an_order_already_gone_when_accepted_straight_from_the_list_is_logged_as_gone(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        sent = len(capture.messages)
+        mock.configure(apply_mode="taken", refusal_http_status=400)
+        mock.set_work_orders([wo("2026-10-20", "AM", "assigned", "09:00"), wo("2026-10-15", "PM", "available", "14:00")])
+        report = await quick_check_then_read(settings, capture, session)
+        assert "Opening 2026-10-15 PM: missed straight from the open-order list" in caplog.text
+        assert report.results == [] and "was gone" in caplog.text
+        assert mock.stats()["accept_calls"] == ["1", "2"] and len(capture.messages) == sent
+    finally:
+        await session.close()
+
+
+async def test_an_accept_straight_from_the_list_counts_once_toward_the_daily_cap(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False, max_applies_per_day=3)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        mock.set_work_orders([
+            wo("2026-10-20", "AM", "assigned", "09:00"),
+            wo("2026-10-15", "PM", "available", "14:00"),
+            wo("2026-10-16", "AM", "assigned", "09:00"),
+            wo("2026-10-16", "PM", "available", "14:00"),
+        ])
+        report = await quick_check_then_read(settings, capture, session)
+        assert sorted((str(r.slot), r.outcome) for r in report.results) == [
+            ("2026-10-15 PM", ApplyOutcome.APPLIED),
+            ("2026-10-16 PM", ApplyOutcome.APPLIED),
+        ]
+        assert "Opening 2026-10-15 PM: applied, straight from the open-order list" in caplog.text
+        assert "Opening 2026-10-16 PM: applied, straight" not in caplog.text
+        assert mock.stats()["accept_calls"] == ["1", "2", "4"]
     finally:
         await session.close()

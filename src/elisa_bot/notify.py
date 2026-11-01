@@ -172,6 +172,13 @@ def cycle_message(
 
 
 def paused_message(code: str) -> Message:
+    if code == "verification_required":
+        return Message(
+            "Elisa: bot switched off (Elisa's robot check)",
+            f"Elisa asked for a robot check or a code at sign-in ({code}), which the bot doesn't do. "
+            "The bot switched itself off so it won't lock the account. The password is fine. "
+            "Please don't switch the bot back on; tell Ross.",
+        )
     return Message(
         "Elisa: bot switched off (sign-in problem)",
         f"Elisa did not accept the sign-in ({code}). The bot switched itself off so it won't lock the account. "
