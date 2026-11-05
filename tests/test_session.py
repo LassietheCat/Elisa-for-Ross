@@ -53,6 +53,64 @@ async def test_elisa_robot_check_stops_after_one_attempt(mock, session):
     assert mock.stats()["login_attempts"] == 1
 
 
+async def test_expired_cookie_session_raises_verification_required(mock, settings, tmp_path):
+    cookie_path = tmp_path / "cookies.json"
+    cookie_path.write_text(__import__("json").dumps([{
+        "name": "mock_session", "value": "stale-token",
+        "domain": "127.0.0.1", "path": "/", "secure": False, "httpOnly": True,
+    }]))
+    env = {
+        "ELISA_BASE_URL": settings.base_url,
+        "DATA_DIR": str(tmp_path),
+        "TIMEZONE": "America/New_York",
+        "HEADLESS": "true",
+        "TEST_MODE": "true",
+        "COOKIES_FILE": str(cookie_path),
+    }
+    from elisa_bot.config import Settings as S
+    stale_settings = S.from_env(env)
+    stale = SiteSession(stale_settings, Selectors())
+    await stale.start()
+    try:
+        with pytest.raises(VerificationRequired):
+            await stale.ensure_ready()
+        assert mock.stats()["login_attempts"] == 0
+    finally:
+        await stale.close()
+
+
+async def test_cookie_session_skips_the_login_form(mock, settings, tmp_path):
+    cookie_path = tmp_path / "cookies.json"
+    first = SiteSession(settings, Selectors())
+    await first.start()
+    try:
+        await first.ensure_ready()
+        raw = await first._context.cookies()
+        cookie_path.write_text(__import__("json").dumps(raw))
+    finally:
+        await first.close()
+
+    env = {
+        "ELISA_BASE_URL": settings.base_url,
+        "DATA_DIR": str(tmp_path),
+        "TIMEZONE": "America/New_York",
+        "HEADLESS": "true",
+        "TEST_MODE": "true",
+        "COOKIES_FILE": str(cookie_path),
+    }
+    from elisa_bot.config import Settings as S
+    cookie_settings = S.from_env(env)
+    second = SiteSession(cookie_settings, Selectors())
+    await second.start()
+    try:
+        signed_in_now = await second.ensure_ready()
+        assert signed_in_now is True
+        assert not second._on_login_page()
+        assert mock.stats()["logins_ok"] == 1
+    finally:
+        await second.close()
+
+
 async def test_signs_out_through_the_user_menu(mock, session):
     assert await session.logout() is False
     await session.ensure_ready()

@@ -101,6 +101,7 @@ class Settings:
     headless: bool = True
     timezone: str = "America/New_York"
     selectors_file: Path | None = None
+    cookies_file: Path | None = None
 
     test_mode: bool = True
     apply_on_first_run: bool = False
@@ -159,6 +160,7 @@ class Settings:
         if log_level not in ("DEBUG", "INFO", "WARNING", "ERROR"):
             raise ConfigError("LOG_LEVEL must be DEBUG, INFO, WARNING or ERROR")
         selectors_file = e.text("SELECTORS_FILE")
+        cookies_file = e.text("COOKIES_FILE")
 
         min_poll = e.integer("MIN_POLL_SECONDS", 15, lo=5)
         max_poll = e.integer("MAX_POLL_SECONDS", 600, lo=min_poll)
@@ -178,6 +180,7 @@ class Settings:
             headless=e.boolean("HEADLESS", True),
             timezone=timezone,
             selectors_file=Path(selectors_file) if selectors_file else None,
+            cookies_file=Path(cookies_file) if cookies_file else None,
             test_mode=e.boolean("TEST_MODE", True),
             apply_on_first_run=e.boolean("APPLY_ON_FIRST_RUN", False),
             max_applies_per_day=e.integer("MAX_APPLIES_PER_DAY", 10, lo=0),
@@ -261,6 +264,8 @@ class Settings:
             raise ConfigError("CONTROL_SECRET_KEY must be at least 32 characters")
 
     def require_site_credentials(self) -> None:
+        if self.cookies_file is not None:
+            return
         missing = [
             name
             for name, value in (("ELISA_EMAIL", self.elisa_email), ("ELISA_PASSWORD", self.elisa_password))

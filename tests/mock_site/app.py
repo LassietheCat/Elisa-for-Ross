@@ -132,7 +132,9 @@ def create_app(state: MockState) -> FastAPI:
         return None
 
     @app.get("/")
-    async def root():
+    async def root(request: Request):
+        if signed_in(request):
+            return RedirectResponse("/my/dashboard/main-dashboard", status_code=302)
         return RedirectResponse("/login", status_code=302)
 
     @app.get("/login", response_class=HTMLResponse)

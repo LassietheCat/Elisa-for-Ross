@@ -82,6 +82,20 @@ CONTROL_PASSWORD_FILE=/etc/elisa-bot/secrets/control_password
 CONTROL_SECRET_KEY_FILE=/etc/elisa-bot/secrets/control_secret_key
 ```
 
+**Cookie session** (if Elisa's sign-in requires a human to pass a robot check): instead of
+email and password, put a cookie file (exported from a signed-in browser, see below) on the
+server and set:
+
+```
+COOKIES_FILE=/etc/elisa-bot/secrets/cookies.json
+LOGOUT_WHEN_OFF=false
+```
+
+Leave `ELISA_EMAIL_FILE` and `ELISA_PASSWORD_FILE` unset when using cookies. The bot loads
+the cookies on start and skips the login form; it does not log out when switched off (doing
+so would invalidate the session). When the session expires the bot emails "session expired"
+and switches itself off; export fresh cookies and restart.
+
 Put each secret in its own one-line file: the Elisa email and password, the AgentMail
 API key, and a password for the on/off page. The page's signing key is generated:
 
@@ -173,6 +187,7 @@ when Elisa lists a new open work order or refuses one.
 |---|---|---|
 | Bot switched off (sign-in problem) | Elisa rejected the password. The bot stopped itself and won't retry. | Sign in by hand once; update the secret file; restart; switch on. |
 | Bot switched off (Elisa's robot check) | Elisa asked for a robot check or a code at sign-in (reCAPTCHA since Oct 31). The bot stopped itself and won't retry. | Leave it off. Don't restart it or press ON: each sign-in attempt meets the same check, and Elisa disables accounts after too many failed sign-ins. |
+| Bot switched off (session expired) | The saved Elisa session (cookie file) expired. | Export fresh cookies from a signed-in browser session; replace `/etc/elisa-bot/secrets/cookies.json`; restart; switch on. |
 | Bot can't check right now | 3 checks in a row failed. | Usually fixes itself ("working again" follows). If not within 30 minutes: read the log, then `elisa-bot off`, `elisa-bot site-check`, `elisa-bot on`. |
 | Please check | Accept was sent but Elisa's answer didn't come, or was a server error, a rate limit or a sign-in error. | Look at Elisa. |
 | Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
@@ -204,6 +219,23 @@ accepts in Elisa. To stop clicking but keep alerts, set `TEST_MODE=true` and run
 `sudo systemctl restart elisa-bot`; set it back to `false` to accept again. Openings
 seen while in test mode are never accepted later. `MAX_APPLIES_PER_DAY` (10) caps the
 accepts per day.
+
+## Exporting Elisa cookies
+
+When `COOKIES_FILE` is set, Anya signs in to Elisa in her own browser. Export the session
+cookies with a browser extension that can export in Netscape/JSON format (e.g. "EditThisCookie"
+for Chrome or "Cookie Quick Manager" for Firefox). Export all cookies for `www.sosi1.com`.
+
+Copy the file to the server:
+
+```bash
+scp -i ~/.ssh/elisa_vps cookies-www.sosi1.com.json root@207.244.242.218:/etc/elisa-bot/secrets/cookies.json
+ssh -i ~/.ssh/elisa_vps root@207.244.242.218 'chown root:elisa /etc/elisa-bot/secrets/cookies.json && chmod 640 /etc/elisa-bot/secrets/cookies.json'
+sudo systemctl restart elisa-bot
+```
+
+The session typically lasts days to weeks depending on Elisa's token expiry. When it expires
+the bot emails "session expired" and switches off; repeat from the export step.
 
 ## Updating
 

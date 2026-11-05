@@ -9,6 +9,7 @@ import logging
 import math
 import re
 import time
+from pathlib import Path
 from collections import deque
 from email.utils import parsedate_to_datetime
 from typing import Awaitable, Callable, Iterable, Mapping
@@ -141,6 +142,32 @@ class SiteSession:
             raise RuntimeError("session not started")
         return self._page
 
+    async def _load_cookies(self, path: Path) -> None:
+        now = time.time()
+        raw = json.loads(path.read_text())
+        entries = raw if isinstance(raw, list) else raw.get("cookies", [])
+        pw_cookies = []
+        for c in entries:
+            exp = c.get("expirationDate")
+            if exp and exp > 0 and exp < now:
+                continue
+            entry: dict = {
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c["domain"],
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", False),
+                "httpOnly": c.get("httpOnly", False),
+            }
+            if exp and exp > 0:
+                entry["expires"] = int(exp)
+            if c.get("sameSite") in ("Strict", "Lax", "None"):
+                entry["sameSite"] = c["sameSite"]
+            pw_cookies.append(entry)
+        if pw_cookies:
+            await self._context.add_cookies(pw_cookies)
+            log.debug("Loaded %d cookie(s) from %s", len(pw_cookies), path.name)
+
     async def start(self) -> None:
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=self.settings.headless)
@@ -149,6 +176,8 @@ class SiteSession:
             locale="en-US",
             timezone_id=self.settings.timezone,
         )
+        if self.settings.cookies_file is not None:
+            await self._load_cookies(self.settings.cookies_file)
         self._page = await self._context.new_page()
         self._page.set_default_timeout(20_000)
         self._page.on("request", self._on_request)
@@ -441,6 +470,14 @@ class SiteSession:
         return self.page.url.startswith("http") and not self._on_login_page()
 
     async def login(self) -> None:
+        if self.settings.cookies_file is not None:
+            page = self.page
+            await page.goto(self.settings.base_url, wait_until="domcontentloaded")
+            if not self._on_login_page():
+                log.info("Resumed Elisa session from cookies")
+                return
+            log.warning("Cookie session expired; cannot sign in without manual reCAPTCHA")
+            raise VerificationRequired("cookie session expired; a human sign-in is needed to refresh the cookies", code="cookie_expired")
         self.settings.require_site_credentials()
         if self.sign_ins is not None:
             self.sign_ins.take()

@@ -179,6 +179,12 @@ def paused_message(code: str) -> Message:
             "The bot switched itself off so it won't lock the account. The password is fine. "
             "Please don't switch the bot back on; tell Ross.",
         )
+    if code == "cookie_expired":
+        return Message(
+            "Elisa: bot switched off (session expired)",
+            "The saved Elisa session expired. The bot switched itself off. "
+            "Anya needs to sign in to Elisa in her browser and export fresh cookies; tell Ross.",
+        )
     return Message(
         "Elisa: bot switched off (sign-in problem)",
         f"Elisa did not accept the sign-in ({code}). The bot switched itself off so it won't lock the account. "

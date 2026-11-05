@@ -141,6 +141,12 @@ def test_robot_check_message_says_not_to_switch_back_on():
     assert "password is fine" in message.text and "don't switch the bot back on" in message.text
 
 
+def test_cookie_expired_message_says_to_export_fresh_cookies():
+    message = paused_message("cookie_expired")
+    assert message.subject == "Elisa: bot switched off (session expired)"
+    assert "session expired" in message.text and "fresh cookies" in message.text
+
+
 OWNER = "owner@example.test"
 APP_PASSWORD = "app-password-1234"
 
