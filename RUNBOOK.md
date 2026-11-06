@@ -136,6 +136,34 @@ The bot can't email when its whole server is down, so an outside service watches
 If the server stops, the bot crashes, or it fails for 5 minutes in a row, the pings stop and
 the monitor emails within about 10 minutes.
 
+## Text alerts
+
+Optional, and separate from email. Texts go out only for the urgent alerts — a job accepted
+or clicked-but-unconfirmed, the bot switching itself off, checks failing, checks working
+again, and the test alert. Missed, skipped and day-off notices stay email-only.
+
+1. At console.twilio.com, buy an SMS-capable number and copy the Account SID and an Auth Token.
+2. Register that number for **A2P 10DLC** (Messaging → Regulatory Compliance). US carriers
+   drop unregistered traffic. Allow 1–3 weeks; do this first if texts are wanted by a date.
+3. Put the token in `/etc/elisa-bot/secrets/twilio_auth_token` (root:elisa, 640), then in
+   `/etc/elisa-bot/env`:
+
+```
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN_FILE=/etc/elisa-bot/secrets/twilio_auth_token
+TWILIO_FROM=+1XXXXXXXXXX
+ALERT_SMS_TO=+1XXXXXXXXXX,+1XXXXXXXXXX
+```
+
+4. `sudo systemctl restart elisa-bot elisa-control`, then press **Send test alert** on the
+   page. It sends the email and the text together.
+
+Every number must be in E.164 form (`+15551234567`); the bot refuses to start otherwise, so a
+typo shows up at restart rather than silently never texting. The on/off page's top card shows
+`Text alerts: on · N phones` once it is working. Texts are trimmed to 320 characters. If email
+arrives but no text does, check the Twilio console's Messaging logs for the per-message
+`error_code`; a number that is not yet A2P-registered is the usual cause.
+
 ## First start
 
 ```bash

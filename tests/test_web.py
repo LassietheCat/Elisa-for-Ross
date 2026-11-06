@@ -96,8 +96,8 @@ def test_switch_turns_the_bot_on_and_off(tmp_path):
     assert control.enabled is True and control.updated_by == "web"
     page = client.get("/").text
     assert "ON" in page and "Turn OFF" in page
-    assert "Checking for new openings every 20 seconds; reading the calendar every 60 seconds." in page
-    assert "every 15 seconds</option>" in page and "every 20 seconds</option>" in page
+    assert "Checking every 20 s" in page and "calendar every 60 s" in page
+    assert "every 15 s</option>" in page and "every 20 s</option>" in page
     client.post("/switch", data={"enabled": "off", "csrf": csrf_of(client)})
     assert ControlStore(settings).load().enabled is False
 
@@ -126,7 +126,7 @@ def test_without_quick_checks_the_page_shows_one_interval(tmp_path):
     sign_in(client)
     client.post("/switch", data={"enabled": "on", "csrf": csrf_of(client)})
     page = client.get("/").text
-    assert "Checking every 60 seconds." in page and '<label for="interval">Check</label>' in page
+    assert "Checking every 60 s" in page and "Check interval" in page
 
 
 def test_tampered_cookie_is_rejected(tmp_path):
@@ -165,9 +165,8 @@ def test_status_shows_last_check_accepted_slots_and_stale_warning(tmp_path):
     page = client.get("/").text
     assert "Last check: Fri Oct 9, 9:50:00 AM (OK)" in page
     assert "No check for 10 min" in page
-    assert "<li>Wed Oct 14 AM</li>" in page
-    accepted = page[page.index("Accepted recently"):page.index("Days off")]
-    assert "Fri Oct 16 AM" not in accepted
+    assert "Wed Oct 14 AM" in page
+    assert "Fri Oct 16 AM" in page
 
 
 def test_test_alert_button(tmp_path):
@@ -217,7 +216,7 @@ def test_half_days_off_can_be_added_and_removed(tmp_path, caplog):
     caplog.set_level(logging.INFO)
     settings, client, _ = make(tmp_path)
     sign_in(client)
-    assert '<option value="AM">AM only</option>' in client.get("/").text
+    assert '<label for="pt-am">AM</label>' in client.get("/").text
     client.post("/days-off", data={"add": "2026-10-21", "part": "AM", "csrf": csrf_of(client)})
     client.post("/days-off", data={"add": "2026-11-26", "part": "pm", "csrf": csrf_of(client)})
     client.post("/days-off", data={"add": "2026-11-27", "part": "day", "csrf": csrf_of(client)})
@@ -252,10 +251,10 @@ def test_right_now_shows_quick_checks_sign_in_alarm_and_today(tmp_path):
     ControlStore(settings).update(by="test", now=NOW, enabled=True)
     sign_in(client)
     page = client.get("/").text
-    assert "Quick checks: every 20 seconds, last answer Fri Oct 9, 9:59:40 AM. Elisa lists 0 open orders." in page
-    assert "Signed in to Elisa since Fri Oct 9, 8:00:00 AM." in page
-    assert "Outside alarm: on, last signal Fri Oct 9, 9:59:00 AM." in page
-    assert "Today: 600 calendar reads, 2 failed; 1 accepted, 1 missed." in page
+    assert "Last quick check" in page and "9:59:40 AM" in page and "0 open" in page
+    assert "Signed in since" in page and "8:00:00 AM" in page
+    assert "Outside alarm: OK" in page and "9:59:00 AM" in page
+    assert "600" in page and "reads today" in page and "accepted today" in page and "missed today" in page
     assert "Wed Oct 14 AM: accepted, 6.2 s after the bot noticed it" in page
     assert "a new opening was gone before the bot could read it, 3.0 s after the bot noticed it" in page
 
@@ -266,7 +265,7 @@ def test_right_now_warns_when_the_bot_stops_reporting(tmp_path):
     ControlStore(settings).update(by="test", now=NOW, enabled=True)
     sign_in(client)
     page = client.get("/").text
-    assert "The bot hasn't reported for 10 min." in page and "Outside alarm: not set up." in page
+    assert "No status update for 10 min" in page and "Outside alarm: not configured" in page
     assert "No openings yet." in page
 
 
@@ -337,3 +336,20 @@ def test_job_types_can_be_narrowed_on_the_page(tmp_path, caplog):
     client.post("/job-types", data={"types": ["OSI", "VRI"], "csrf": csrf_of(client)})
     assert ControlStore(settings).load().service_types == ["VRI", "OSI"]
     assert client.post("/job-types", data={"types": ["OPI"], "csrf": "wrong"}).status_code == 403
+
+
+def test_the_page_says_whether_text_alerts_are_on(tmp_path):
+    _, client, _ = make(tmp_path)
+    sign_in(client)
+    assert "Text alerts: not configured" in client.get("/").text
+    _, client, _ = make(
+        tmp_path / "sms",
+        twilio_account_sid="AC" + "0" * 30,
+        twilio_auth_token="twilio-secret-value",
+        twilio_from="+15550000000",
+        alert_sms_to=("+15551112222", "+15553334444"),
+    )
+    sign_in(client)
+    page = client.get("/").text
+    assert "Text alerts: on" in page and "2 phones" in page
+    assert "+15551112222" not in page

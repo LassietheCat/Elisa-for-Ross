@@ -155,6 +155,7 @@ async def test_skips_an_opening_too_close_to_a_job_the_owner_already_has_and_say
         Message(
             "Elisa: opening Thu Oct 15 AM (too close to another job)",
             "Not accepted, less than 3 hours from another job: Thu Oct 15 AM.",
+            sms=False,
         )
     ]
 
@@ -171,7 +172,11 @@ async def test_without_the_owners_job_times_a_booked_half_day_is_skipped(mock, t
     report = await run(settings, capture)
     assert report.results == [] and report.skipped_booked == [S("2026-10-15 AM")]
     assert capture.messages == [
-        Message("Elisa: opening Thu Oct 15 AM (already booked)", "Skipped, you already have a job then: Thu Oct 15 AM.")
+        Message(
+            "Elisa: opening Thu Oct 15 AM (already booked)",
+            "Skipped, you already have a job then: Thu Oct 15 AM.",
+            sms=False,
+        )
     ]
 
 

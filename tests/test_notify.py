@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import base64
+import contextlib
+import dataclasses
 import logging
 import smtplib
 import socket
+import urllib.parse
 
 import pytest
 from aiosmtpd.controller import Controller
@@ -124,6 +128,113 @@ async def test_email_failure_retries_then_gives_up(fake_smtp):
     assert len(fake_smtp.instances) == 3
 
 
+TWILIO_SID = "AC" + "0" * 30
+
+
+def sms_settings(**overrides) -> Settings:
+    fields = {
+        "twilio_account_sid": TWILIO_SID,
+        "twilio_auth_token": "twilio-secret-value",
+        "twilio_from": "+15550000000",
+        "alert_sms_to": ("+15551112222", "+15553334444"),
+    }
+    return Settings(**(fields | overrides))
+
+
+@pytest.fixture
+def fake_twilio(monkeypatch):
+    posts: list[dict] = []
+
+    def urlopen(request, timeout=None):
+        if fake_twilio.fail:
+            raise OSError("twilio unreachable")
+        posts.append(
+            {
+                "url": request.full_url,
+                "method": request.get_method(),
+                "auth": request.get_header("Authorization"),
+                "form": {k: v[0] for k, v in urllib.parse.parse_qs(request.data.decode()).items()},
+            }
+        )
+        return contextlib.nullcontext()
+
+    fake_twilio.fail = False
+    fake_twilio.posts = posts
+    monkeypatch.setattr(notify.urllib.request, "urlopen", urlopen)
+    return fake_twilio
+
+
+async def test_text_is_sent_to_every_number(fake_twilio, caplog):
+    caplog.set_level(logging.DEBUG)
+    sent = await notify.SmsNotifier(sms_settings()).send(
+        Message("Elisa: applied Wed Oct 14 AM", "Applied: Wed Oct 14 AM.")
+    )
+    assert sent
+    assert [post["form"]["To"] for post in fake_twilio.posts] == ["+15551112222", "+15553334444"]
+    post = fake_twilio.posts[0]
+    assert post["method"] == "POST"
+    assert post["url"] == f"https://api.twilio.com/2010-04-01/Accounts/{'AC' + '0' * 30}/Messages.json"
+    assert post["form"]["From"] == "+15550000000"
+    assert post["form"]["Body"] == "Elisa bot: Applied: Wed Oct 14 AM."
+    user, _, token = base64.b64decode(post["auth"].removeprefix("Basic ")).decode().partition(":")
+    assert user == "AC" + "0" * 30 and token == "twilio-secret-value"
+    assert "twilio-secret-value" not in caplog.text
+
+
+async def test_informational_alerts_do_not_send_a_text(fake_twilio):
+    message = cycle_message([result("2026-10-20 AM", ApplyOutcome.MISSED)])
+    assert message.sms is False
+    assert await notify.SmsNotifier(sms_settings()).send(message)
+    assert fake_twilio.posts == []
+
+
+async def test_an_accepted_job_does_send_a_text(fake_twilio):
+    assert cycle_message([result("2026-10-14 AM", ApplyOutcome.APPLIED)]).sms is True
+    assert cycle_message([result("2026-10-14 AM", ApplyOutcome.UNVERIFIED)]).sms is True
+    assert paused_message("bad_password").sms is True
+    assert trouble_message(3, "browser_error").sms is True
+
+
+async def test_text_failure_retries_then_gives_up(fake_twilio):
+    fake_twilio.fail = True
+    notifier = notify.SmsNotifier(sms_settings(alert_sms_to=("+15551112222",)), retries=2, retry_delay_s=0)
+    assert not await notifier.send(Message("s", "t"))
+    assert fake_twilio.posts == []
+
+
+async def test_a_long_text_is_trimmed_to_two_segments(fake_twilio):
+    await notify.SmsNotifier(sms_settings(alert_sms_to=("+15551112222",))).send(Message("s", "word " * 200))
+    body = fake_twilio.posts[0]["form"]["Body"]
+    assert len(body) == notify.SMS_MAX_CHARS and body.endswith("...")
+    assert body.isascii()
+
+
+def test_build_notifier_uses_whichever_channels_are_configured():
+    assert isinstance(notify.build_notifier(Settings()), notify.ConsoleNotifier)
+    assert isinstance(notify.build_notifier(email_settings()), EmailNotifier)
+    assert isinstance(notify.build_notifier(sms_settings()), notify.SmsNotifier)
+    both = notify.build_notifier(
+        dataclasses.replace(
+            email_settings(),
+            twilio_account_sid=TWILIO_SID,
+            twilio_auth_token="twilio-secret-value",
+            twilio_from="+15550000000",
+            alert_sms_to=("+15551112222",),
+        )
+    )
+    assert isinstance(both, notify.MultiNotifier)
+    assert [n.name for n in both.notifiers] == ["email", "sms"]
+
+
+async def test_a_text_still_goes_out_when_email_is_down(fake_smtp, fake_twilio):
+    fake_smtp.fail = True
+    both = notify.MultiNotifier(
+        [EmailNotifier(email_settings(), retries=0), notify.SmsNotifier(sms_settings(), retries=0)]
+    )
+    assert await both.send(Message("Elisa: applied Wed Oct 14 AM", "Applied: Wed Oct 14 AM."))
+    assert len(fake_twilio.posts) == 2
+
+
 def test_console_is_used_until_email_is_configured():
     assert isinstance(notify.build_notifier(Settings()), notify.ConsoleNotifier)
     assert isinstance(notify.build_notifier(email_settings()), notify.EmailNotifier)
@@ -218,7 +329,11 @@ def test_trouble_alert_says_why_and_holds_no_job_details():
 
 def test_an_opening_on_a_day_off_is_reported_as_a_day_off():
     message = cycle_message([], days_off=[S("2026-10-14 AM")])
-    assert message == Message("Elisa: opening Wed Oct 14 AM (day off)", "Not accepted, marked as a day off: Wed Oct 14 AM.")
+    assert message == Message(
+        "Elisa: opening Wed Oct 14 AM (day off)",
+        "Not accepted, marked as a day off: Wed Oct 14 AM.",
+        sms=False,
+    )
 
 
 def test_openings_too_close_or_on_a_full_day_are_reported_by_date_and_half():

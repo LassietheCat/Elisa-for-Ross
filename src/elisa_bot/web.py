@@ -38,8 +38,8 @@ MANIFEST = {
     "short_name": "Elisa bot",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#f5f5f7",
-    "theme_color": "#1a7f37",
+    "background_color": "#f2f2f7",
+    "theme_color": "#34c759",
     "icons": [
         {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png"},
         {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
@@ -81,39 +81,158 @@ SECURITY_HEADERS = {
 LAYOUT = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="theme-color" content="#1a7f37">
+<meta name="theme-color" content="#34c759">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Elisa bot">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/icon-180.png">
 %%REFRESH%%<title>Elisa bot</title>
 <style>
-:root{color-scheme:light dark;--bg:#f5f5f7;--card:#fff;--text:#1d1d1f;--muted:#6e6e73;--on:#1a7f37;--stop:#c62828;
---warn:#a35200;--border:#d2d2d7}
-@media (prefers-color-scheme:dark){:root{--bg:#111113;--card:#1c1c1e;--text:#f2f2f7;--muted:#a1a1a6;--on:#30d158;
---stop:#ff453a;--warn:#ff9f0a;--border:#3a3a3c}}
-body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-main{max-width:480px;margin:0 auto;padding:16px}
-h1{font-size:20px;margin:6px 0 14px}
-.card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;margin-bottom:12px}
-.state{font-size:30px;font-weight:700;margin:0}
-.state.on{color:var(--on)} .state.off{color:var(--muted)}
-p{margin:6px 0} .muted{color:var(--muted);font-size:14px} .warn{color:var(--warn);font-weight:600}
-.flash{border-color:var(--on)}
-button{font:inherit;border:0;border-radius:12px;padding:12px 16px;cursor:pointer}
-.big{width:100%;font-size:20px;font-weight:700;color:#fff;padding:18px;margin-top:12px}
-.big.turn-on{background:var(--on)} .big.turn-off{background:var(--stop)}
-.secondary{background:transparent;border:1px solid var(--border);color:var(--text)}
-select,input[type=password],input[type=date]{font:inherit;padding:10px;border-radius:10px;
-border:1px solid var(--border);background:var(--card);color:var(--text)}
-.small{padding:6px 10px;font-size:14px}
-ul.plain{list-style:none;padding-left:0} ul.plain li{display:flex;justify-content:space-between;align-items:center;
-gap:8px;margin:4px 0}
-input[type=password]{width:100%;box-sizing:border-box;margin:8px 0 12px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-ul{margin:6px 0 0;padding-left:20px}
+*{box-sizing:border-box}
+:root{color-scheme:light dark;
+  --bg:#f2f2f7;--card:#fff;--card2:#f9f9fb;
+  --text:#1c1c1e;--muted:#8e8e93;--faint:#c7c7cc;
+  --on:#34c759;--on-d:#e6fbed;--on-t:#1a7f37;
+  --stop:#ff3b30;--stop-d:#fff0ef;--stop-t:#c62828;
+  --warn:#ff9500;--warn-t:#7a4000;
+  --accent:#007aff;--accent-d:#e5f0ff;
+  --border:#e5e5ea;
+  --sh:0 1px 3px rgba(0,0,0,.07),0 4px 12px rgba(0,0,0,.05);
+  --r:16px;--r2:12px}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#1c1c1e;--card:#2c2c2e;--card2:#3a3a3c;
+  --text:#f2f2f7;--muted:#8e8e93;--faint:#48484a;
+  --on:#30d158;--on-d:#0a2d14;--on-t:#30d158;
+  --stop:#ff453a;--stop-d:#2d0d0c;--stop-t:#ff453a;
+  --warn:#ff9f0a;--warn-t:#ffc060;
+  --accent:#0a84ff;--accent-d:#001a3a;
+  --border:#3a3a3c;
+  --sh:0 1px 3px rgba(0,0,0,.3),0 4px 12px rgba(0,0,0,.25)}}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.hdr{padding:14px 20px 6px;max-width:980px;margin:0 auto}
+.hdr h1{font-size:14px;font-weight:600;margin:0;color:var(--muted);letter-spacing:.02em}
+.wrap{max-width:980px;margin:0 auto;padding:8px 16px 48px;
+  display:grid;grid-template-columns:1fr;gap:10px}
+@media(min-width:640px){.wrap{grid-template-columns:1fr 1fr;
+  grid-template-areas:"notif notif" "hero hero" "nums nums" "act cfg" "foot foot"}}
+.card{background:var(--card);border-radius:var(--r);padding:18px 20px;box-shadow:var(--sh)}
+.clabel{font-size:11px;font-weight:700;text-transform:uppercase;
+  letter-spacing:.7px;color:var(--muted);margin:0 0 12px}
+.notif{grid-area:notif}
+.notif-inner{display:flex;align-items:center;gap:10px;padding:11px 16px;
+  border-radius:var(--r2);background:var(--on-d);border:1px solid var(--on);
+  font-size:14px;font-weight:500;color:var(--on-t)}
+.hero{grid-area:hero}
+.badge-row{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 11px;
+  border-radius:999px;font-size:12px;font-weight:700}
+.badge.on{background:var(--on-d);color:var(--on-t)}
+.badge.off{background:var(--border);color:var(--muted)}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.mode-tag{font-size:12px;color:var(--muted);padding:4px 9px;
+  border-radius:999px;background:var(--card2);border:1px solid var(--border)}
+.hero-desc{font-size:14px;color:var(--muted);margin:0 0 14px}
+.hero-warn{font-size:14px;font-weight:600;color:var(--stop-t);
+  background:var(--stop-d);border-radius:var(--r2);padding:9px 13px;margin-bottom:12px}
+.tog{width:100%;padding:16px 20px;border:0;border-radius:var(--r2);
+  font:700 17px/1 inherit;color:#fff;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  transition:filter .15s}
+.tog:active{filter:brightness(.87)}
+.tog.start{background:linear-gradient(135deg,#2ecc71,#1e9e56)}
+.tog.stop{background:linear-gradient(135deg,#ff6b6b,#c0392b)}
+.irows{margin-top:14px;border-top:1px solid var(--border);padding-top:12px;
+  display:flex;flex-direction:column;gap:6px}
+.ir{display:flex;align-items:baseline;gap:6px;font-size:13px;color:var(--muted)}
+.ir b{color:var(--text);font-weight:500}
+.nums{grid-area:nums;display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.num{background:var(--card);border-radius:var(--r2);padding:12px 14px;
+  box-shadow:var(--sh);text-align:center}
+.num .n{font-size:28px;font-weight:700;line-height:1}
+.num .l{font-size:12px;color:var(--muted);font-weight:500;margin-top:3px}
+.c-green .n{color:var(--on-t)} .c-red .n{color:var(--stop-t)} .c-amber .n{color:var(--warn)}
+.act{grid-area:act}
+.tl{list-style:none;padding:0;margin:0}
+.tli{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.tli:last-child{border-bottom:0}
+.tl-dot{width:9px;height:9px;border-radius:50%;flex-shrink:0;margin-top:4px}
+.d-ok{background:var(--on)} .d-skip{background:var(--faint)}
+.d-warn{background:var(--warn)} .d-err{background:var(--stop)}
+.tl-slot{font-size:14px;font-weight:600;display:block;margin-bottom:1px}
+.tl-out{font-size:13px;color:var(--muted)}
+.tl-time{font-size:12px;color:var(--faint);margin-top:2px}
+.cfg{grid-area:cfg;display:flex;flex-direction:column;gap:8px}
+details{background:var(--card);border-radius:var(--r2);box-shadow:var(--sh);overflow:hidden}
+details[open]{box-shadow:var(--sh),0 0 0 1.5px var(--border)}
+summary{padding:13px 17px;font-size:14px;font-weight:600;cursor:pointer;
+  list-style:none;display:flex;align-items:center;justify-content:space-between;
+  user-select:none;-webkit-user-select:none}
+summary::-webkit-details-marker{display:none}
+.chev{color:var(--muted);transition:transform .2s;display:inline-block;line-height:1}
+details[open] .chev{transform:rotate(180deg)}
+.dbody{padding:0 17px 15px;border-top:1px solid var(--border)}
+.ddesc{font-size:13px;color:var(--muted);margin:9px 0 10px}
+.pills{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.pills input[type=checkbox]{position:absolute;opacity:0;width:1px;height:1px;
+  overflow:hidden;clip:rect(0,0,0,0)}
+.pills label{display:inline-flex;align-items:center;padding:7px 15px;
+  border-radius:999px;border:1.5px solid var(--border);font-size:14px;font-weight:500;
+  cursor:pointer;transition:all .15s;user-select:none;background:var(--card)}
+.pills input[type=checkbox]:checked+label{background:var(--on-d);border-color:var(--on);
+  color:var(--on-t);font-weight:600}
+.seg{display:inline-flex;background:var(--card2);border-radius:10px;
+  padding:3px;gap:2px;border:1px solid var(--border)}
+.seg input[type=radio]{position:absolute;opacity:0;width:1px;height:1px;
+  overflow:hidden;clip:rect(0,0,0,0)}
+.seg label{padding:5px 11px;border-radius:8px;font-size:13px;font-weight:500;
+  cursor:pointer;color:var(--muted);transition:all .15s;
+  user-select:none;-webkit-user-select:none;white-space:nowrap}
+.seg input[type=radio]:checked+label{background:var(--card);color:var(--text);
+  font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.numpick{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+.numpick input[type=radio]{position:absolute;opacity:0;width:1px;height:1px;
+  overflow:hidden;clip:rect(0,0,0,0)}
+.numpick label{width:38px;height:38px;display:flex;align-items:center;
+  justify-content:center;border-radius:50%;border:1.5px solid var(--border);
+  font-size:14px;font-weight:600;cursor:pointer;transition:all .15s;
+  user-select:none;background:var(--card);color:var(--text)}
+.numpick input[type=radio]:checked+label{background:var(--accent);
+  border-color:var(--accent);color:#fff}
+.selw{position:relative;display:inline-block}
+.selw::after{content:"▾";position:absolute;right:10px;top:50%;
+  transform:translateY(-50%);pointer-events:none;font-size:11px;color:var(--muted)}
+select{font:inherit;font-size:14px;padding:8px 28px 8px 11px;border-radius:10px;
+  border:1px solid var(--border);background:var(--card);color:var(--text);
+  appearance:none;-webkit-appearance:none;cursor:pointer}
+input[type=date]{font:inherit;font-size:14px;padding:8px 10px;border-radius:10px;
+  border:1px solid var(--border);background:var(--card);color:var(--text);
+  min-width:0;flex:1}
+input[type=password]{font:inherit;font-size:15px;padding:11px 14px;width:100%;
+  border-radius:var(--r2);border:1.5px solid var(--border);
+  background:var(--card2);color:var(--text);margin-bottom:14px}
+input[type=password]:focus{outline:none;border-color:var(--accent)}
+.dlist{list-style:none;padding:0;margin:0 0 12px}
+.dlist li{display:flex;align-items:center;justify-content:space-between;
+  gap:8px;padding:7px 0;border-bottom:1px solid var(--border);font-size:14px}
+.dlist li:last-child{border-bottom:0}
+.frow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+.btn{font:500 14px/1 inherit;border:1.5px solid var(--border);border-radius:10px;
+  padding:8px 15px;background:var(--card);color:var(--text);cursor:pointer;
+  white-space:nowrap;transition:opacity .15s}
+.btn:active{opacity:.7}
+.btn-sm{font-size:13px;padding:5px 10px;border-radius:8px}
+.b-primary{border-color:var(--accent);color:var(--accent)}
+.b-save{border-color:var(--on);color:var(--on-t)}
+.b-danger{border-color:var(--stop-d);color:var(--stop-t)}
+.foot{grid-area:foot;display:flex;gap:8px}
+.foot form{flex:1}
+.foot button{width:100%}
 </style></head>
-<body><main>%%BODY%%</main></body></html>"""
+<body>
+<div class="hdr"><h1>Elisa bot</h1></div>
+<div class="wrap">%%BODY%%</div>
+</body></html>"""
 
 
 def _page(body: str, *, status: int = 200, refresh: int | None = None) -> HTMLResponse:
@@ -122,15 +241,20 @@ def _page(body: str, *, status: int = 200, refresh: int | None = None) -> HTMLRe
 
 
 def _login_page(message: str = "") -> str:
-    note = f'<p class="warn">{html.escape(message)}</p>' if message else ""
+    err = (
+        f'<div style="font-size:14px;font-weight:600;color:var(--stop-t);background:var(--stop-d);'
+        f'border-radius:10px;padding:9px 13px;margin-bottom:12px">{html.escape(message)}</div>'
+    ) if message else ""
     return (
-        "<h1>Elisa bot</h1>"
-        '<form class="card" method="post" action="/login">'
-        '<label for="password">Password</label>'
-        '<input id="password" name="password" type="password" autocomplete="current-password" required autofocus>'
-        f"{note}"
-        '<button class="big turn-on" type="submit">Sign in</button>'
-        "</form>"
+        '<div style="grid-column:1/-1;max-width:400px;margin:40px auto 0;width:100%;padding:0 4px">'
+        '<h1 style="font-size:22px;font-weight:700;text-align:center;margin:0 0 20px">Elisa bot</h1>'
+        '<div class="card"><form method="post" action="/login">'
+        '<label for="pw" style="display:block;font-size:13px;font-weight:600;'
+        'color:var(--muted);margin-bottom:6px">Password</label>'
+        '<input id="pw" name="password" type="password" autocomplete="current-password" required autofocus>'
+        f"{err}"
+        '<button class="tog start" type="submit">Sign in</button>'
+        "</form></div></div>"
     )
 
 
@@ -167,61 +291,227 @@ def _age(text: str | None, now: dt.datetime) -> float | None:
         return None
 
 
-def _right_now(settings: Settings, control: ControlState, state: BotState, status: dict, now: dt.datetime) -> str:
-    tz = settings.timezone
-    lines = []
-    if control.enabled:
-        quick = status.get("quick") if isinstance(status.get("quick"), dict) else {}
-        if not settings.quick_check_seconds:
-            pass
-        elif quick.get("paused"):
-            lines.append("<p>Quick checks: paused after Elisa refused one; they restart after the next calendar read.</p>")
-        elif quick.get("answered_at"):
-            count = quick.get("open_count")
-            listed = f" Elisa lists {count} open order{'' if count == 1 else 's'}." if isinstance(count, int) else ""
-            lines.append(
-                f"<p>Quick checks: every {html.escape(str(quick.get('every')))} seconds, "
-                f"last answer {_when(quick['answered_at'], tz)}.{listed}</p>"
-            )
-        else:
-            lines.append("<p>Quick checks: starting.</p>")
-        if status.get("signed_in_at"):
-            lines.append(f"<p>Signed in to Elisa since {_when(status['signed_in_at'], tz)}.</p>")
-        age = _age(status.get("updated_at"), now)
-        if age is not None and age > STATUS_STALE_S:
-            lines.append(f'<p class="warn">The bot hasn\'t reported for {int(age // 60)} min. It may not be running.</p>')
-    beat = status.get("heartbeat") if isinstance(status.get("heartbeat"), dict) else {}
-    if not beat.get("configured"):
-        lines.append('<p class="muted">Outside alarm: not set up.</p>')
-    elif beat.get("failing"):
-        lines.append('<p class="warn">Outside alarm: the last signal failed.</p>')
-    elif beat.get("ok_at"):
-        lines.append(f"<p>Outside alarm: on, last signal {_when(beat['ok_at'], tz)}.</p>")
-    today = now.date().isoformat()
-    counts = state.daily.get(today, {})
-    events = [entry for entry in state.activity if str(entry.get("at", "")).startswith(today)]
-    accepted = sum(1 for entry in events if entry.get("outcome") == "applied")
-    missed = sum(1 for entry in events if entry.get("outcome") in ("missed", "gone"))
-    lines.append(
-        f'<p class="muted">Today: {counts.get("reads", 0)} calendar reads, {counts.get("failed", 0)} failed; '
-        f"{accepted} accepted, {missed} missed.</p>"
-    )
-    return '<div class="card"><strong>Right now</strong>' + "".join(lines) + "</div>"
+_DOT = {
+    "applied": "d-ok", "missed": "d-warn", "gone": "d-warn",
+    "error": "d-err", "unverified": "d-warn", "refused": "d-err",
+    "test_mode": "d-skip", "skipped": "d-skip", "day off": "d-skip",
+    "too close": "d-skip", "day full": "d-skip", "too soon": "d-skip",
+}
 
 
 def _recent_activity(settings: Settings, state: BotState) -> str:
     items = []
     for entry in reversed(state.activity[-ACTIVITY_SHOWN:]):
-        outcome = OUTCOMES.get(str(entry.get("outcome")), html.escape(str(entry.get("outcome"))))
+        key = str(entry.get("outcome"))
+        outcome = OUTCOMES.get(key, html.escape(key))
+        dot = _DOT.get(key, "d-skip")
         try:
-            slot = f"{Slot.parse(entry['slot']).label()}: " if entry.get("slot") else ""
+            slot = Slot.parse(entry["slot"]).label() if entry.get("slot") else ""
         except (TypeError, ValueError):
             slot = ""
         seconds = entry.get("seconds")
         timing = f", {seconds} s after the bot noticed it" if isinstance(seconds, (int, float)) else ""
-        items.append(f"<li>{_when(entry.get('at'), settings.timezone)}: {slot}{outcome}{timing}</li>")
-    body = "".join(items) or "<li>No openings yet.</li>"
-    return f'<div class="card"><strong>Recent activity</strong><ul>{body}</ul></div>'
+        prefix = f"{html.escape(slot)}: " if slot else ""
+        when = _when(entry.get("at"), settings.timezone)
+        items.append(
+            f'<li class="tli"><div class="tl-dot {dot}"></div>'
+            f'<div><div class="tl-slot">{prefix}{outcome}{timing}</div>'
+            f'<div class="tl-time">{when}</div></div></li>'
+        )
+    body = "".join(items) or '<li class="tli"><div class="tl-slot" style="color:var(--muted)">No openings yet.</div></li>'
+    return f'<div class="card act"><p class="clabel">Recent activity</p><ul class="tl">{body}</ul></div>'
+
+
+def _hero_card(
+    settings: Settings, control: ControlState, state: BotState,
+    status: dict, now: dt.datetime, token: str,
+) -> str:
+    tz = settings.timezone
+    enabled = control.enabled
+
+    badge = (
+        f'<span class="badge {"on" if enabled else "off"}">'
+        f'<span class="dot"></span>{"ON" if enabled else "OFF"}</span>'
+    )
+    mode_tag = f'<span class="mode-tag">{"Test mode" if settings.test_mode else "Live"}</span>'
+
+    if enabled and settings.quick_check_seconds:
+        desc = f"Checking every {settings.quick_check_seconds} s · calendar every {control.poll_seconds} s"
+    elif enabled:
+        desc = f"Checking every {control.poll_seconds} s"
+    else:
+        desc = "Not checking"
+
+    stale = ""
+    if enabled and state.last_run_at:
+        try:
+            age = (now - dt.datetime.fromisoformat(state.last_run_at)).total_seconds()
+        except ValueError:
+            age = 0
+        if age > max(3 * control.poll_seconds, 90):
+            stale = f'<div class="hero-warn">&#9888; No check for {int(age // 60)} min — bot may not be running.</div>'
+
+    btn_cls = "stop" if enabled else "start"
+    btn_label = "&#9646; Turn OFF" if enabled else "&#9654; Turn ON"
+    btn_val = "off" if enabled else "on"
+
+    info = []
+    quick = status.get("quick") if isinstance(status.get("quick"), dict) else {}
+    if enabled:
+        if settings.quick_check_seconds:
+            if quick.get("paused"):
+                info.append('<div class="ir">Quick checks paused (rate limit) — resumes after next read</div>')
+            elif quick.get("answered_at"):
+                count = quick.get("open_count")
+                listed = f" · <b>{count} open</b>" if isinstance(count, int) else ""
+                info.append(f'<div class="ir">Last quick check <b>{_when(quick["answered_at"], tz)}</b>{listed}</div>')
+        if status.get("signed_in_at"):
+            info.append(f'<div class="ir">Signed in since <b>{_when(status["signed_in_at"], tz)}</b></div>')
+        upd_age = _age(status.get("updated_at"), now)
+        if upd_age is not None and upd_age > STATUS_STALE_S:
+            info.append(f'<div class="ir" style="color:var(--stop-t)">No status update for {int(upd_age // 60)} min</div>')
+
+    if state.last_run_ok is None:
+        result = ""
+    elif state.last_run_ok:
+        result = " (OK)"
+    else:
+        result = f" (failed: {html.escape(state.last_error or 'unknown')})"
+    if state.last_run_at:
+        info.append(f'<div class="ir">Last check: {_when(state.last_run_at, tz)}{result}</div>')
+
+    beat = status.get("heartbeat") if isinstance(status.get("heartbeat"), dict) else {}
+    if not beat.get("configured"):
+        info.append('<div class="ir">Outside alarm: not configured</div>')
+    elif beat.get("failing"):
+        info.append('<div class="ir" style="color:var(--stop-t)">Outside alarm: last signal failed</div>')
+    elif beat.get("ok_at"):
+        info.append(f'<div class="ir">Outside alarm: OK · <b>{_when(beat["ok_at"], tz)}</b></div>')
+
+    phones = len(settings.alert_sms_to)
+    if settings.sms_enabled:
+        info.append(f'<div class="ir">Text alerts: on · <b>{phones} phone{"" if phones == 1 else "s"}</b></div>')
+    else:
+        info.append('<div class="ir">Text alerts: not configured</div>')
+
+    irows = f'<div class="irows">{"".join(info)}</div>' if info else ""
+
+    return (
+        f'<div class="card hero">'
+        f'<div class="badge-row">{badge}{mode_tag}</div>'
+        f'<p class="hero-desc">{html.escape(desc)}</p>'
+        f'{stale}'
+        f'<form method="post" action="/switch">{token}'
+        f'<button class="tog {btn_cls}" name="enabled" value="{btn_val}" type="submit">{btn_label}</button>'
+        f'</form>{irows}</div>'
+    )
+
+
+def _stats_row(settings: Settings, state: BotState, now: dt.datetime) -> str:
+    today = now.date().isoformat()
+    counts = state.daily.get(today, {})
+    events = [e for e in state.activity if str(e.get("at", "")).startswith(today)]
+    accepted = sum(1 for e in events if e.get("outcome") == "applied")
+    missed = sum(1 for e in events if e.get("outcome") in ("missed", "gone"))
+    reads = counts.get("reads", 0)
+    failed = counts.get("failed", 0)
+
+    def _stat(n: int, label: str, color: str = "") -> str:
+        cls = f' {color}' if color else ''
+        return f'<div class="num{cls}"><div class="n">{n}</div><div class="l">{label}</div></div>'
+
+    return (
+        f'<div class="nums">'
+        f'{_stat(reads, "reads today", "c-red" if failed > 0 else "")}'
+        f'{_stat(accepted, "accepted today", "c-green" if accepted > 0 else "")}'
+        f'{_stat(missed, "missed today", "c-amber" if missed > 0 else "")}'
+        f'</div>'
+    )
+
+
+def _settings_panel(settings: Settings, control: ControlState, now: dt.datetime, token: str) -> str:
+    sections = []
+
+    rows = "".join(
+        f'<li><span>{_day_off_label(e)}</span>'
+        f'<form method="post" action="/days-off" style="display:inline-flex">{token}'
+        f'<input type="hidden" name="remove" value="{html.escape(e)}">'
+        f'<button class="btn btn-sm" type="submit">Remove</button></form></li>'
+        for e in control.days_off
+    ) or '<li style="color:var(--muted);font-size:14px">None set.</li>'
+    sections.append(
+        '<details open><summary><span>Days off</span><span class="chev">&#9660;</span></summary>'
+        '<div class="dbody">'
+        '<p class="ddesc">The bot skips jobs on these days. AM = before noon, PM = noon or later (Eastern).</p>'
+        f'<ul class="dlist">{rows}</ul>'
+        f'<form method="post" action="/days-off">{token}'
+        '<div class="frow">'
+        f'<input type="date" name="add" min="{now.date().isoformat()}" required aria-label="Day off">'
+        '<div class="seg">'
+        '<input type="radio" id="pt-day" name="part" value="day" checked>'
+        '<label for="pt-day">All day</label>'
+        '<input type="radio" id="pt-am" name="part" value="AM">'
+        '<label for="pt-am">AM</label>'
+        '<input type="radio" id="pt-pm" name="part" value="PM">'
+        '<label for="pt-pm">PM</label>'
+        '</div>'
+        '<button class="btn b-save" type="submit">Add</button>'
+        '</div></form></div></details>'
+    )
+
+    gap = settings.job_gap_minutes / 60
+    num_opts = "".join(
+        f'<input type="radio" id="j{n}" name="max_jobs_per_day" value="{n}"'
+        f'{" checked" if n == control.max_jobs_per_day else ""}>'
+        f'<label for="j{n}">{n}</label>'
+        for n in range(1, MAX_JOBS_PER_DAY + 1)
+    )
+    sections.append(
+        '<details><summary><span>Jobs per day</span><span class="chev">&#9660;</span></summary>'
+        '<div class="dbody">'
+        f'<p class="ddesc">Max jobs per day, spaced at least {gap:g} hours apart (Eastern).</p>'
+        f'<form method="post" action="/jobs-per-day">{token}'
+        f'<div class="numpick">{num_opts}</div>'
+        '<div class="frow"><button class="btn b-save" type="submit">Save</button></div>'
+        '</form></div></details>'
+    )
+
+    type_opts = "".join(
+        f'<input type="checkbox" id="tp-{code.lower()}" name="types" value="{code}"'
+        f'{" checked" if code in control.service_types else ""}>'
+        f'<label for="tp-{code.lower()}">{code}</label>'
+        for code in SERVICE_TYPES
+    )
+    sections.append(
+        '<details><summary><span>Job types</span><span class="chev">&#9660;</span></summary>'
+        '<div class="dbody">'
+        '<p class="ddesc">VRI = video remote, OPI = phone, OSI = on-site.</p>'
+        f'<form method="post" action="/job-types">{token}'
+        f'<div class="pills">{type_opts}</div>'
+        '<div class="frow"><button class="btn b-save" type="submit">Save</button></div>'
+        '</form></div></details>'
+    )
+
+    choices = sorted(
+        {c for c in INTERVAL_CHOICES if settings.min_poll_seconds <= c <= settings.max_poll_seconds}
+        | {control.poll_seconds}
+    )
+    opts = "".join(
+        f'<option value="{c}"{" selected" if c == control.poll_seconds else ""}>every {c} s</option>'
+        for c in choices
+    )
+    lbl = "Calendar read" if settings.quick_check_seconds else "Check"
+    sections.append(
+        f'<details><summary><span>{lbl} interval</span><span class="chev">&#9660;</span></summary>'
+        '<div class="dbody">'
+        f'<form method="post" action="/interval">{token}'
+        '<div class="frow">'
+        f'<div class="selw"><select name="poll_seconds">{opts}</select></div>'
+        '<button class="btn b-save" type="submit">Save</button>'
+        '</div></form></div></details>'
+    )
+
+    return f'<div class="cfg">{"".join(sections)}</div>'
 
 
 def _status_page(
@@ -235,115 +525,22 @@ def _status_page(
 ) -> str:
     status_data = status_data or {}
     token = f'<input type="hidden" name="csrf" value="{html.escape(csrf)}">'
-    parts = ["<h1>Elisa bot</h1>"]
+    parts = []
+
     if flash in FLASH:
-        parts.append(f'<div class="card flash">{FLASH[flash]}</div>')
+        parts.append(f'<div class="notif"><div class="notif-inner">{html.escape(FLASH[flash])}</div></div>')
 
-    if control.enabled and settings.quick_check_seconds:
-        status = (
-            f'<p class="state on">ON</p><p>Checking for new openings every {settings.quick_check_seconds} seconds; '
-            f'reading the calendar every {control.poll_seconds} seconds.</p>'
-        )
-        button = '<button class="big turn-off" name="enabled" value="off" type="submit">Turn OFF</button>'
-    elif control.enabled:
-        status = f'<p class="state on">ON</p><p>Checking every {control.poll_seconds} seconds.</p>'
-        button = '<button class="big turn-off" name="enabled" value="off" type="submit">Turn OFF</button>'
-    else:
-        status = '<p class="state off">OFF</p><p>Not checking.</p>'
-        button = '<button class="big turn-on" name="enabled" value="on" type="submit">Turn ON</button>'
-    mode = (
-        "Test mode: finds openings and emails you, but doesn't click Accept."
-        if settings.test_mode
-        else "Live: accepts openings automatically."
-    )
-    if state.last_run_ok is None:
-        result = ""
-    elif state.last_run_ok:
-        result = " (OK)"
-    else:
-        result = f" (failed: {html.escape(state.last_error or 'unknown')})"
-    last = f'<p class="muted">Last check: {_when(state.last_run_at, settings.timezone)}{result}</p>'
-    stale = ""
-    if control.enabled and state.last_run_at:
-        try:
-            age = (now - dt.datetime.fromisoformat(state.last_run_at)).total_seconds()
-        except ValueError:
-            age = 0
-        if age > max(3 * control.poll_seconds, 90):
-            stale = f'<p class="warn">No check for {int(age // 60)} min. The bot may not be running.</p>'
-    parts.append(
-        f'<form class="card" method="post" action="/switch">{token}{status}'
-        f'<p class="muted">{mode}</p>{last}{stale}{button}</form>'
-    )
-
-    parts.append(_right_now(settings, control, state, status_data, now))
+    parts.append(_hero_card(settings, control, state, status_data, now, token))
+    parts.append(_stats_row(settings, state, now))
     parts.append(_recent_activity(settings, state))
-
-    accepted = [
-        Slot.parse(entry["slot"])
-        for entry in reversed(state.activity)
-        if entry.get("outcome") == "applied" and isinstance(entry.get("slot"), str)
-    ][:10]
-    items = "".join(f"<li>{slot.label()}</li>" for slot in accepted) or "<li>None yet.</li>"
-    parts.append(f'<div class="card"><strong>Accepted recently</strong><ul>{items}</ul></div>')
-
-    rows = "".join(
-        f'<li><span>{_day_off_label(entry)}</span><form method="post" action="/days-off">{token}'
-        f'<input type="hidden" name="remove" value="{entry}">'
-        '<button class="secondary small" type="submit">Remove</button></form></li>'
-        for entry in control.days_off
-    ) or "<li>None.</li>"
+    parts.append(_settings_panel(settings, control, now, token))
     parts.append(
-        '<div class="card"><strong>Days off</strong>'
-        "<p class=\"muted\">The bot doesn't accept jobs on these days. AM means jobs starting before noon, "
-        "PM noon or later (Eastern time).</p>"
-        f'<ul class="plain">{rows}</ul>'
-        f'<form class="row" method="post" action="/days-off">{token}'
-        f'<input type="date" name="add" min="{now.date().isoformat()}" required aria-label="Day off">'
-        '<select name="part" aria-label="Part of the day"><option value="day">Whole day</option>'
-        '<option value="AM">AM only</option><option value="PM">PM only</option></select>'
-        '<button class="secondary" type="submit">Add</button></form></div>'
-    )
-
-    jobs_options = "".join(
-        f'<option value="{n}"{" selected" if n == control.max_jobs_per_day else ""}>{n}</option>'
-        for n in range(1, MAX_JOBS_PER_DAY + 1)
-    )
-    gap = settings.job_gap_minutes / 60
-    parts.append(
-        f'<form class="card" method="post" action="/jobs-per-day">{token}<strong>Jobs per day</strong>'
-        f'<p class="muted">At most this many jobs a day, starting at least {gap:g} hours apart (Eastern time).</p>'
-        f'<div class="row"><select id="jobs" name="max_jobs_per_day" aria-label="Jobs per day">{jobs_options}</select>'
-        '<button class="secondary" type="submit">Save</button></div></form>'
-    )
-
-    checks = "".join(
-        f'<label><input type="checkbox" name="types" value="{code}"{" checked" if code in control.service_types else ""}> {code}</label>'
-        for code in SERVICE_TYPES
-    )
-    parts.append(
-        f'<form class="card" method="post" action="/job-types">{token}<strong>Job types</strong>'
-        '<p class="muted">The bot accepts only these: VRI (video), OPI (phone), OSI (on site).</p>'
-        f'<div class="row">{checks}<button class="secondary" type="submit">Save</button></div></form>'
-    )
-
-    choices = sorted({c for c in INTERVAL_CHOICES if settings.min_poll_seconds <= c <= settings.max_poll_seconds}
-                     | {control.poll_seconds})
-    options = "".join(
-        f'<option value="{c}"{" selected" if c == control.poll_seconds else ""}>every {c} seconds</option>' for c in choices
-    )
-    parts.append(
-        f'<form class="card row" method="post" action="/interval">{token}'
-        f'<label for="interval">{"Calendar" if settings.quick_check_seconds else "Check"}</label>'
-        f'<select id="interval" name="poll_seconds">{options}</select>'
-        '<button class="secondary" type="submit">Save</button></form>'
-    )
-
-    parts.append(
-        f'<div class="card row"><form method="post" action="/test-alert">{token}'
-        '<button class="secondary" type="submit">Send test alert</button></form>'
+        f'<div class="foot">'
+        f'<form method="post" action="/test-alert">{token}'
+        f'<button class="btn b-primary" type="submit">Send test alert</button></form>'
         f'<form method="post" action="/logout">{token}'
-        '<button class="secondary" type="submit">Sign out</button></form></div>'
+        f'<button class="btn b-danger" type="submit">Sign out</button></form>'
+        f'</div>'
     )
     return "".join(parts)
 

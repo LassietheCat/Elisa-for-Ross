@@ -141,3 +141,32 @@ def test_agentmail_preset():
     settings = Settings.from_env({"SMTP_PROVIDER": "agentmail", "SMTP_USERNAME": "anya-alerts@agentmail.to"})
     assert (settings.smtp_host, settings.smtp_port, settings.smtp_ssl, settings.smtp_starttls) == ("smtp.agentmail.to", 465, True, False)
     assert settings.smtp_from == "anya-alerts@agentmail.to"
+
+
+def test_text_alerts_need_every_twilio_setting(tmp_path):
+    token = tmp_path / "twilio"
+    token.write_text("twilio-file-token\n")
+    env = {
+        "TWILIO_ACCOUNT_SID": "AC" + "0" * 30,
+        "TWILIO_AUTH_TOKEN_FILE": str(token),
+        "TWILIO_FROM": "+15550000000",
+        "ALERT_SMS_TO": "+15551112222, +15553334444",
+    }
+    settings = Settings.from_env(env)
+    assert settings.sms_enabled is True
+    assert settings.twilio_auth_token == "twilio-file-token"
+    assert settings.alert_sms_to == ("+15551112222", "+15553334444")
+    assert "twilio-file-token" not in repr(settings)
+    assert "twilio-file-token" in settings.secret_values()
+    assert Settings.from_env({}).sms_enabled is False
+    for missing in ("TWILIO_ACCOUNT_SID", "TWILIO_FROM", "ALERT_SMS_TO"):
+        assert Settings.from_env({k: v for k, v in env.items() if k != missing}).sms_enabled is False
+
+
+def test_a_mistyped_phone_number_is_rejected_at_startup():
+    for bad in ("5551112222", "+1 555 111 2222", "+15551112222x", "+0123456789"):
+        with pytest.raises(ConfigError, match="E.164"):
+            Settings.from_env({"ALERT_SMS_TO": f"+15551112222,{bad}"})
+    with pytest.raises(ConfigError, match="E.164"):
+        Settings.from_env({"TWILIO_FROM": "555-0000"})
+    assert Settings.from_env({"ALERT_SMS_TO": "+15551112222, ,"}).alert_sms_to == ("+15551112222",)

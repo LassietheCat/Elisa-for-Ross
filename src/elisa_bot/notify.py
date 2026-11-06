@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import smtplib
 import ssl
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -14,11 +17,15 @@ from .models import ApplyOutcome, ApplyResult, Slot
 
 log = logging.getLogger(__name__)
 
+TWILIO_API = "https://api.twilio.com/2010-04-01"
+SMS_MAX_CHARS = 320
+
 
 @dataclass(frozen=True)
 class Message:
     subject: str
     text: str
+    sms: bool = True
 
 
 class Notifier(Protocol):
@@ -82,8 +89,85 @@ class EmailNotifier:
                 pass
 
 
+def sms_body(message: Message) -> str:
+    body = f"Elisa bot: {message.text}"
+    if len(body) <= SMS_MAX_CHARS:
+        return body
+    return body[: SMS_MAX_CHARS - 3].rstrip() + "..."
+
+
+class SmsNotifier:
+    name = "sms"
+
+    def __init__(self, settings: Settings, *, retries: int = 2, retry_delay_s: float = 2.0):
+        self.settings = settings
+        self.retries = retries
+        self.retry_delay_s = retry_delay_s
+
+    async def send(self, message: Message) -> bool:
+        if not message.sms:
+            return True
+        body = sms_body(message)
+        numbers = self.settings.alert_sms_to
+        sent = 0
+        for number in numbers:
+            if await self._send_to(number, body):
+                sent += 1
+        if sent:
+            log.info("Alert text sent to %d of %d number(s)", sent, len(numbers))
+        return sent > 0
+
+    async def _send_to(self, number: str, body: str) -> bool:
+        attempts = self.retries + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                await asyncio.to_thread(self._post, number, body)
+                return True
+            except OSError as exc:
+                log.warning("Alert text failed (%s), attempt %d of %d", type(exc).__name__, attempt, attempts)
+                if attempt < attempts:
+                    await asyncio.sleep(self.retry_delay_s)
+        return False
+
+    def _post(self, number: str, body: str) -> None:
+        s = self.settings
+        sid = s.twilio_account_sid or ""
+        url = f"{TWILIO_API}/Accounts/{urllib.parse.quote(sid, safe='')}/Messages.json"
+        data = urllib.parse.urlencode({"To": number, "From": s.twilio_from or "", "Body": body}).encode()
+        auth = base64.b64encode(f"{sid}:{s.twilio_auth_token or ''}".encode()).decode()
+        request = urllib.request.Request(url, data=data, method="POST")
+        request.add_header("Authorization", f"Basic {auth}")
+        request.add_header("Content-Type", "application/x-www-form-urlencoded")
+        with urllib.request.urlopen(request, timeout=20):
+            pass
+
+
+class MultiNotifier:
+    name = "multi"
+
+    def __init__(self, notifiers: list[Notifier]):
+        self.notifiers = notifiers
+
+    async def send(self, message: Message) -> bool:
+        results = await asyncio.gather(*(n.send(message) for n in self.notifiers), return_exceptions=True)
+        delivered = False
+        for notifier, result in zip(self.notifiers, results):
+            if isinstance(result, BaseException):
+                log.warning("The %s alert raised %s", notifier.name, type(result).__name__)
+            elif result:
+                delivered = True
+        return delivered
+
+
 def build_notifier(settings: Settings) -> Notifier:
-    return EmailNotifier(settings) if settings.email_enabled else ConsoleNotifier()
+    notifiers: list[Notifier] = []
+    if settings.email_enabled:
+        notifiers.append(EmailNotifier(settings))
+    if settings.sms_enabled:
+        notifiers.append(SmsNotifier(settings))
+    if not notifiers:
+        return ConsoleNotifier()
+    return notifiers[0] if len(notifiers) == 1 else MultiNotifier(notifiers)
 
 
 def _labels(slots: Iterable[Slot]) -> str:
@@ -168,7 +252,8 @@ def cycle_message(
         subject = f"Elisa: opening {too_soon[0].label()} (too soon)"
     if subject is None:
         subject = f"Elisa: opening {days_off[0].label()} (day off)"
-    return Message(subject, " ".join(lines))
+    booked = by_outcome[ApplyOutcome.APPLIED] or by_outcome[ApplyOutcome.UNVERIFIED]
+    return Message(subject, " ".join(lines), sms=bool(booked))
 
 
 def paused_message(code: str) -> Message:

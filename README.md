@@ -216,20 +216,44 @@ name instead of `SMTP_FROM_NAME`, so set the inbox's display name to "Elisa Bot"
 security settings. For other providers leave `SMTP_PROVIDER` empty and set
 `SMTP_HOST`, `SMTP_PORT`, `SMTP_SSL` and `SMTP_STARTTLS`.
 
-**Which alerts go out** (all on, as the client asked):
+**Which alerts go out** (all on, as the client asked). "Text" is only used when text
+alerts are configured; everything is emailed either way:
 
-| Alert | When | Setting |
-|---|---|---|
-| Applied | the bot accepted a job | always |
-| Please check | Accept was clicked but the result couldn't be confirmed | always |
-| Refused | Elisa answered the Accept with a refusal (other than "No Longer Available") | always |
-| Test mode, opening | test mode found an opening and its Accept button | always |
-| Missed | an opening was taken by someone else first | `NOTIFY_MISSED` |
-| Skipped | a new opening where the owner already has a job | `NOTIFY_SKIPPED` |
-| Bot switched off | Elisa rejected the sign-in; the bot stopped itself | always |
-| Bot can't check right now | 3 checks in a row failed | always |
-| Bot is working again | checks work again after that alert | always |
-| Bot may be missing openings | a calendar tag can't be read | always |
+| Alert | When | Setting | Text |
+|---|---|---|---|
+| Applied | the bot accepted a job | always | yes |
+| Please check | Accept was clicked but the result couldn't be confirmed | always | yes |
+| Refused | Elisa answered the Accept with a refusal (other than "No Longer Available") | always | no |
+| Test mode, opening | test mode found an opening and its Accept button | always | no |
+| Missed | an opening was taken by someone else first | `NOTIFY_MISSED` | no |
+| Skipped | a new opening where the owner already has a job | `NOTIFY_SKIPPED` | no |
+| Bot switched off | Elisa rejected the sign-in; the bot stopped itself | always | yes |
+| Bot can't check right now | 3 checks in a row failed | always | yes |
+| Bot is working again | checks work again after that alert | always | yes |
+| Bot may be missing openings | a calendar tag can't be read | always | yes |
+| Test alert | the page's button or `test-email` | — | yes |
+
+### Text (SMS) alerts
+
+Off unless configured. Texts carry the urgent alerts only, so the phone doesn't buzz for
+every missed or skipped opening. They go through Twilio:
+
+```
+TWILIO_ACCOUNT_SID=AC...
+TWILIO_AUTH_TOKEN=<auth token, or TWILIO_AUTH_TOKEN_FILE=...>
+TWILIO_FROM=+15550000000
+ALERT_SMS_TO=+15551112222,+15553334444
+```
+
+All four are needed before any text is sent; the on/off page's top card says
+`Text alerts: on · N phones` once they are. Numbers must be E.164 (`+15551234567`) or the
+bot refuses to start. Text bodies carry the same wording as the email, prefixed
+`Elisa bot:` and trimmed to 320 characters; like the emails they hold only the date and
+AM/PM of an opening.
+
+US numbers need **A2P 10DLC** registration in the Twilio console before carriers deliver
+reliably — that takes about 1–3 weeks, so start it early. Email and text are sent at the
+same time and independently: if one channel is down the other still goes out.
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the
