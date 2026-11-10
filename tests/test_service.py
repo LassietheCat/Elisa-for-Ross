@@ -575,7 +575,7 @@ async def test_a_live_event_makes_the_bot_read_that_month_at_once(mock, tmp_path
 
 async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not(monkeypatch):
     sent = []
-    monkeypatch.setattr(service, "_ping", lambda url: sent.append(url) or True)
+    monkeypatch.setattr(service, "monitor_ping_error", lambda url: sent.append(url))
     now = [0.0]
     beat = service.Heartbeat("https://hc.example/ping", 60, timer=lambda: now[0])
     await beat.beat()
@@ -594,6 +594,17 @@ async def test_heartbeat_pings_while_the_bot_is_healthy_and_stops_when_it_is_not
     assert len(sent) == 3
 
 
+async def test_a_ping_url_the_monitor_does_not_recognise_never_counts_as_a_beat(monkeypatch, caplog):
+    monkeypatch.setattr(service, "monitor_ping_error", lambda url: "the monitor does not know this ping URL")
+    beat = service.Heartbeat("https://hc.example/ping", 60, timer=lambda: 0.0, clock=fixed_now)
+    beat.healthy()
+    with caplog.at_level(logging.WARNING):
+        await beat.beat()
+    assert beat.failing is True
+    assert beat.ok_wall is None
+    assert "does not know this ping URL" in caplog.text
+
+
 async def test_a_new_order_names_its_month_and_one_without_a_time_means_all_months(tmp_path):
     quick = QuickCheck(make_settings(tmp_path, "http://127.0.0.1:9"), fixed_now)
     session = ListingSession([A], [A, C], [A, C, None])
@@ -609,7 +620,7 @@ async def test_a_new_order_names_its_month_and_one_without_a_time_means_all_mont
 @pytest.mark.browser
 async def test_the_always_on_bot_sends_heartbeats(monkeypatch, mock, tmp_path):
     sent = []
-    monkeypatch.setattr(service, "_ping", lambda url: sent.append(url) or True)
+    monkeypatch.setattr(service, "monitor_ping_error", lambda url: sent.append(url))
     settings = dataclasses.replace(fast(make_settings(tmp_path, mock.base_url)), heartbeat_url="https://hc.example/ping", heartbeat_seconds=1)
     controls = ControlStore(settings)
     controls.update(by="test", now=fixed_now(), enabled=True)

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import calendar
 import dataclasses
+import json
 import signal
 import sys
 from pathlib import Path
@@ -14,7 +15,7 @@ from .livecheck import SiteCheckReport, run_site_check, site_check_seconds
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
 from .notify import build_notifier, test_message
-from .service import run_forever
+from .service import monitor_ping_error, run_forever
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors, load_selectors
 from .state import ControlStore, StateStore
@@ -40,6 +41,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("off", help="switch the bot off")
     sub.add_parser("status", help="show the switch and the last check")
     sub.add_parser("test-email", help="send a test alert")
+    sub.add_parser("test-heartbeat", help="ping the outside monitor once")
     reset = sub.add_parser("reset-state", help="forget saved openings; the next run records a fresh baseline")
     reset.add_argument("--yes", action="store_true", help="confirm")
     return parser
@@ -105,6 +107,19 @@ def _print_status(settings: Settings) -> None:
     if state.last_run_ok is not None:
         result = " (ok)" if state.last_run_ok else f" (failed: {state.last_error})"
     print(f"Last check: {state.last_run_at or 'never'}{result}")
+    print(f"Outside monitor: {_monitor_line(settings)}")
+
+
+def _monitor_line(settings: Settings) -> str:
+    if not settings.heartbeat_url:
+        return "not set up"
+    try:
+        beat = json.loads(settings.status_path.read_text(encoding="utf-8")).get("heartbeat") or {}
+    except (OSError, ValueError):
+        return "on, nothing reported yet"
+    if beat.get("failing"):
+        return "on, but the last ping failed"
+    return f"on, last ping {beat['ok_at']}" if beat.get("ok_at") else "on, nothing reported yet"
 
 
 async def _run_until_stopped(settings: Settings, selectors: Selectors) -> None:
@@ -138,6 +153,16 @@ def main(argv: list[str] | None = None) -> int:
         sent = asyncio.run(build_notifier(settings).send(test_message()))
         print("Test alert sent." if sent else "Test alert failed; see the log.")
         return 0 if sent else 1
+    if args.command == "test-heartbeat":
+        if not settings.heartbeat_url:
+            print("HEARTBEAT_URL is not set, so the outside monitor is off.", file=sys.stderr)
+            return 2
+        reason = monitor_ping_error(settings.heartbeat_url)
+        if reason is None:
+            print("Monitor pinged; its check should go green within a minute.")
+            return 0
+        print(f"The ping failed: {reason}", file=sys.stderr)
+        return 1
     if args.command in ("on", "off"):
         control = ControlStore(settings).update(by="cli", now=now_in(settings.timezone), enabled=args.command == "on")
         print(f"Switched {'on' if control.enabled else 'off'} (every {control.poll_seconds} s).")

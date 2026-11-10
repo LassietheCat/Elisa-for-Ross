@@ -131,10 +131,22 @@ The bot can't email when its whole server is down, so an outside service watches
    Integrations, add the email addresses that should be told.
 2. Put the check's ping URL in `/etc/elisa-bot/secrets/heartbeat_url` (root:elisa, 640) and set
    `HEARTBEAT_URL_FILE=/etc/elisa-bot/secrets/heartbeat_url` in `/etc/elisa-bot/env`.
-3. `sudo systemctl restart elisa-bot`. The check turns green within a minute.
+3. `sudo -u elisa elisa-bot test-heartbeat` — sends one ping and says whether it landed. Do
+   this before restarting: it separates a wrong URL from a bot that isn't running yet.
+4. `sudo systemctl restart elisa-bot`. The check turns green within a minute.
+
+`elisa-bot status` ends with an **Outside monitor** line (`not set up`, `on, last ping …`, or
+`on, but the last ping failed`), which is the quickest way to confirm it is still working.
 
 If the server stops, the bot crashes, or it fails for 5 minutes in a row, the pings stop and
-the monitor emails within about 10 minutes.
+the monitor emails within about 10 minutes. The bot keeps pinging while it is switched **off**,
+because "off" is a deliberate state and should not raise an alarm — the monitor watches whether
+the bot is alive, not whether it is accepting jobs.
+
+**Prove it works before relying on it.** Once the check is green, `sudo systemctl stop
+elisa-bot` and leave it stopped past the period plus grace (about 10 minutes). The alert should
+arrive. Start it again with `sudo systemctl start elisa-bot`. A monitor nobody has seen fire is
+not yet a monitor.
 
 ## Text alerts
 

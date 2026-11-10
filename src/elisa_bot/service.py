@@ -5,6 +5,7 @@ import calendar
 import datetime as dt
 import logging
 import time
+import urllib.error
 import urllib.request
 from collections import Counter
 from typing import Awaitable, Callable
@@ -31,6 +32,8 @@ QUICK_MAX_S = 120
 QUICK_RECOVER_S = 1800
 HEARTBEAT_STALE_S = 300
 STATUS_EVERY_S = 15
+MONITOR_BODY_PEEK = 200
+MONITOR_UNKNOWN = "not found"
 
 
 def next_delay(failures: int, poll_seconds: int, *, busy: bool = False, retry_after: int | None = None) -> int:
@@ -193,9 +196,10 @@ class Heartbeat:
         if self.sent_at is not None and now - self.sent_at < self.every_s:
             return
         self.sent_at = now
-        ok = await asyncio.to_thread(_ping, self.url)
+        reason = await asyncio.to_thread(monitor_ping_error, self.url)
+        ok = reason is None
         if not ok and not self.failing:
-            log.warning("Heartbeat to the outside monitor failed")
+            log.warning("Heartbeat to the outside monitor failed: %s", reason)
         self.failing = not ok
         if ok and self.clock is not None:
             self.ok_wall = to_iso(self.clock())
@@ -233,12 +237,20 @@ class StatusFile:
             log.debug("Could not write the status file (%s)", type(exc).__name__)
 
 
-def _ping(url: str) -> bool:
+def monitor_ping_error(url: str) -> str | None:
     try:
         with urllib.request.urlopen(url, timeout=10) as response:
-            return 200 <= response.status < 300
-    except (OSError, ValueError):
-        return False
+            status = response.status
+            body = response.read(MONITOR_BODY_PEEK).decode("utf-8", "replace").strip()
+    except urllib.error.HTTPError as exc:
+        return f"the monitor answered HTTP {exc.code}"
+    except (OSError, ValueError) as exc:
+        return f"the monitor could not be reached ({type(exc).__name__})"
+    if not 200 <= status < 300:
+        return f"the monitor answered HTTP {status}"
+    if MONITOR_UNKNOWN in body.casefold():
+        return f"the monitor does not know this ping URL (it answered {body!r})"
+    return None
 
 
 class FailureAlerts:

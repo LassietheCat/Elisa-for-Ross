@@ -37,7 +37,8 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 .venv/bin/python -m elisa_bot site-check       # read-only: does the reader fit the live page? (see below)
 .venv/bin/python -m elisa_bot once             # one full run (test mode unless TEST_MODE=false)
 .venv/bin/python -m elisa_bot once --live      # one full run that really clicks Accept
-.venv/bin/python -m elisa_bot test-email       # send a test alert
+.venv/bin/python -m elisa_bot test-email       # send a test alert (email, and text if set up)
+.venv/bin/python -m elisa_bot test-heartbeat   # ping the outside monitor once
 .venv/bin/python -m elisa_bot reset-state --yes
 ```
 
@@ -125,7 +126,8 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   pings it every `HEARTBEAT_SECONDS` (60) while it's working, or deliberately switched
   off. If the server stops, the bot crashes, or nothing has gone well for 5 minutes, the
   pings stop and the outside monitor emails you. The bot can't send its own alert when
-  its whole server is down.
+  its whole server is down. Check the URL with `test-heartbeat`, which pings once and says
+  whether it landed; `status` ends with an **Outside monitor** line showing the last ping.
 - **Off:** it signs out (`LOGOUT_WHEN_OFF=true`), closes the browser and waits.
 - **Sign-in rejected** (wrong password, a verification code, or a robot check such as
   Elisa's "We could not verify you are not a robot"): it switches itself off, emails
