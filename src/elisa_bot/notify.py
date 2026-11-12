@@ -13,7 +13,7 @@ from email.utils import formataddr
 from typing import Iterable, Protocol
 
 from .config import Settings
-from .models import ApplyOutcome, ApplyResult, Slot
+from .models import ApplyOutcome, ApplyResult, LandingCheck, Slot
 
 log = logging.getLogger(__name__)
 
@@ -254,6 +254,30 @@ def cycle_message(
         subject = f"Elisa: opening {days_off[0].label()} (day off)"
     booked = by_outcome[ApplyOutcome.APPLIED] or by_outcome[ApplyOutcome.UNVERIFIED]
     return Message(subject, " ".join(lines), sms=bool(booked))
+
+
+def landing_message(checks: Iterable[LandingCheck]) -> Message | None:
+    checks = list(checks)
+    missing = [check for check in checks if check.missing]
+    settled = [check for check in checks if not check.missing and check.unsure]
+    lines = []
+    for check in missing:
+        what = check.label() if len(check.slots) == 1 else f"{check.missing} of {len(check.slots)} jobs accepted for {check.label()}"
+        lines.append(f"Not on your calendar: {what}, {_minutes(check.minutes)} after the bot clicked Accept.")
+    if missing:
+        lines.append("Please check Elisa.")
+    if settled:
+        lines.append(f"On your calendar after all: {', '.join(check.label() for check in settled)}.")
+    if not lines:
+        return None
+    shown = missing or settled
+    more = f" (+{len(shown) - 1} more)" if len(shown) > 1 else ""
+    wording = "not on your calendar" if missing else "on your calendar after all"
+    return Message(f"Elisa: {wording}, {shown[0].label()}{more}", " ".join(lines))
+
+
+def _minutes(count: int) -> str:
+    return f"{count} minute{'' if count == 1 else 's'}"
 
 
 def paused_message(code: str) -> Message:

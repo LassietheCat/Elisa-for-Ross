@@ -98,3 +98,15 @@ class ApplyResult:
     outcome: ApplyOutcome
     code: str = ""
     clicked: bool = False
+
+
+@dataclass(frozen=True)
+class LandingCheck:
+    day: dt.date
+    slots: tuple[Slot, ...]
+    missing: int
+    unsure: bool
+    minutes: int
+
+    def label(self) -> str:
+        return self.slots[0].label() if len(self.slots) == 1 else f"{self.day:%a %b} {self.day.day}"

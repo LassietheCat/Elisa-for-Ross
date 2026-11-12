@@ -122,6 +122,15 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   "New job on the calendar: Thu Oct 29 PM, now 1 Assigned (was none at 14:28:41)", or
   "Job gone" / "Job changed". The previous read of each month is kept in
   `data/state.json`. This adds no requests.
+- **Calendar check after Accept:** Elisa's answer to an Accept is not the last word. For
+  every job it accepts, the bot notes how many jobs that day should then have, and checks
+  the count on the next read of that month. A job on the calendar is checked off quietly.
+  One still missing 3 minutes after Accept sends "Not on your calendar", by email and
+  text. A "Please check" job that does turn up sends "On your calendar after all", so
+  nobody has to look. It compares whole days, not AM/PM, because Elisa can file an order
+  under the other half from the one its start time suggests. When a check falls due, that
+  month is read next instead of waiting for its turn, which changes the order of reads
+  but adds none.
 - **Heartbeat:** with `HEARTBEAT_URL` set (for example a healthchecks.io check), the bot
   pings it every `HEARTBEAT_SECONDS` (60) while it's working, or deliberately switched
   off. If the server stops, the bot crashes, or nothing has gone well for 5 minutes, the
@@ -225,6 +234,8 @@ alerts are configured; everything is emailed either way:
 |---|---|---|---|
 | Applied | the bot accepted a job | always | yes |
 | Please check | Accept was clicked but the result couldn't be confirmed | always | yes |
+| Not on your calendar | an accepted job isn't on the calendar 3 minutes after Accept | always | yes |
+| On your calendar after all | a "Please check" job did turn up on the calendar | always | yes |
 | Refused | Elisa answered the Accept with a refusal (other than "No Longer Available") | always | no |
 | Test mode, opening | test mode found an opening and its Accept button | always | no |
 | Missed | an opening was taken by someone else first | `NOTIFY_MISSED` | no |

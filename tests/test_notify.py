@@ -14,11 +14,12 @@ from aiosmtpd.smtp import AuthResult, LoginPassword
 
 from elisa_bot import notify
 from elisa_bot.config import Settings
-from elisa_bot.models import ApplyOutcome, ApplyResult, Slot
+from elisa_bot.models import ApplyOutcome, ApplyResult, LandingCheck, Slot
 from elisa_bot.notify import (
     EmailNotifier,
     Message,
     cycle_message,
+    landing_message,
     paused_message,
     recovered_message,
     trouble_message,
@@ -352,4 +353,43 @@ def test_a_refusal_and_an_opening_that_starts_too_soon_are_reported_plainly():
     assert message.subject == "Elisa: refused Mon Nov 16 AM"
     assert message.text == (
         "Not accepted, Elisa refused it: Mon Nov 16 AM. Not accepted, too soon (minimum notice 2 hours): Tue Oct 27 AM."
+    )
+
+
+def check(slots: list[str], missing: int, *, unsure: bool = False, minutes: int = 3) -> LandingCheck:
+    parsed = tuple(S(slot) for slot in slots)
+    return LandingCheck(parsed[0].date, parsed, missing, unsure, minutes)
+
+
+def test_a_job_that_is_not_on_the_calendar_is_reported_by_email_and_text():
+    message = landing_message([check(["2026-11-12 AM"], 1)])
+    assert message == Message(
+        "Elisa: not on your calendar, Thu Nov 12 AM",
+        "Not on your calendar: Thu Nov 12 AM, 3 minutes after the bot clicked Accept. Please check Elisa.",
+    )
+    assert message.sms is True
+
+
+def test_when_only_some_of_a_days_jobs_landed_the_alert_says_how_many_did_not():
+    message = landing_message([check(["2026-11-27 PM", "2026-11-27 PM"], 1, minutes=1)])
+    assert message.subject == "Elisa: not on your calendar, Fri Nov 27"
+    assert message.text == (
+        "Not on your calendar: 1 of 2 jobs accepted for Fri Nov 27, 1 minute after the bot clicked Accept. Please check Elisa."
+    )
+
+
+def test_a_please_check_that_landed_is_settled_and_a_plain_success_says_nothing():
+    assert landing_message([check(["2026-11-12 AM"], 0)]) is None
+    message = landing_message([check(["2026-11-12 AM"], 0, unsure=True)])
+    assert message == Message("Elisa: on your calendar after all, Thu Nov 12 AM", "On your calendar after all: Thu Nov 12 AM.")
+    assert message.sms is True
+
+
+def test_a_missing_job_leads_the_subject_when_both_kinds_arrive_together():
+    message = landing_message([check(["2026-11-12 AM"], 0, unsure=True), check(["2026-11-13 PM"], 1), check(["2026-11-16 AM"], 1)])
+    assert message.subject == "Elisa: not on your calendar, Fri Nov 13 PM (+1 more)"
+    assert message.text == (
+        "Not on your calendar: Fri Nov 13 PM, 3 minutes after the bot clicked Accept. "
+        "Not on your calendar: Mon Nov 16 AM, 3 minutes after the bot clicked Accept. "
+        "Please check Elisa. On your calendar after all: Thu Nov 12 AM."
     )

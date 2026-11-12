@@ -39,6 +39,7 @@ class BotState:
     activity: list[dict] = field(default_factory=list)
     daily: dict[str, dict[str, int]] = field(default_factory=dict)
     jobs: dict[str, dict] = field(default_factory=dict)
+    landing: dict[str, dict] = field(default_factory=dict)
 
     def count(self, day: dt.date, key: str) -> None:
         entry = self.daily.setdefault(day.isoformat(), {})
@@ -61,6 +62,18 @@ class BotState:
         day = now.date().isoformat()
         self.applies_by_day[day] = self.applies_by_day.get(day, 0) + 1
 
+    def expect_on_calendar(self, slot: Slot, jobs_before: int, now: dt.datetime, *, unsure: bool) -> None:
+        entry = self.landing.get(slot.date.isoformat())
+        if not isinstance(entry, dict) or type(entry.get("expect")) is not int:
+            entry = {"expect": jobs_before}
+        slots = entry.get("slots")
+        self.landing[slot.date.isoformat()] = {
+            "expect": entry["expect"] + 1,
+            "slots": [*(slots if isinstance(slots, list) else []), str(slot)],
+            "unsure": entry.get("unsure") is True or unsure,
+            "at": to_iso(now),
+        }
+
     def prune(self, today: dt.date, keep_days: int = 7) -> None:
         cutoff = today - dt.timedelta(days=keep_days)
         self.applied = {k: v for k, v in self.applied.items() if Slot.parse(k).date >= cutoff}
@@ -70,6 +83,7 @@ class BotState:
         }
         self.daily = {k: v for k, v in self.daily.items() if dt.date.fromisoformat(k) >= cutoff}
         self.jobs = {k: v for k, v in self.jobs.items() if k >= f"{today:%Y-%m}"}
+        self.landing = {k: v for k, v in self.landing.items() if k >= today.isoformat()}
 
 
 class StateStore:

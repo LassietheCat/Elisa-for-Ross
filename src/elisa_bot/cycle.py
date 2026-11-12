@@ -8,8 +8,8 @@ from typing import AbstractSet, Callable
 
 from .config import Settings
 from .detect import jobs_per_day, new_openings, openings_in, plan_month
-from .models import JOB_STATUSES, ApplyOutcome, ApplyResult, MonthReading, Opening, Slot, SlotTags
-from .notify import Notifier, build_notifier, cycle_message, missed_openings_message
+from .models import JOB_STATUSES, ApplyOutcome, ApplyResult, LandingCheck, MonthReading, Opening, Slot, SlotTags
+from .notify import Notifier, build_notifier, cycle_message, landing_message, missed_openings_message
 from .site.applier import MAX_TRIES, Applier
 from .site.calendar import CalendarReader
 from .site.errors import CalendarNotRendered, InvalidCredentials, SiteError, VerificationRequired
@@ -21,6 +21,8 @@ from .timeutil import add_months, now_in, short_time, to_iso
 log = logging.getLogger(__name__)
 
 Clock = Callable[[], dt.datetime]
+
+LANDING_WAIT_S = 180
 
 
 @dataclass
@@ -39,6 +41,7 @@ class CycleReport:
     months_read: list[tuple[int, int]] = field(default_factory=list)
     signed_in: bool = False
     open_count: int = 0
+    landings: list[LandingCheck] = field(default_factory=list)
 
 
 def month_key(month: tuple[int, int]) -> str:
@@ -148,6 +151,7 @@ async def run_once(
             session.live.saw_open(reading.available())
             missed += await _warn_about_missed_tags(session, reading)
             _note_job_changes(state, reading, clock())
+            report.landings += _check_landings(state, reading, clock())
             baseline = month_key((year, month_number)) in state.baseline_pending
             orders = await session.open_order_times((year, month_number), loaded_mark)
             if orders is None:
@@ -191,9 +195,13 @@ async def run_once(
             ):
                 for slot in slots:
                     state.add_activity(to_iso(clock()), str(slot), outcome, _since(detected_at))
+            day_jobs = jobs_per_day(reading.slots)
             for opening in plan.to_apply:
                 result = await applier.apply_one(opening)
-                _record(state, report, session, opening, result, clock(), _since(detected_at))
+                _record(
+                    state, report, session, opening, result, clock(), _since(detected_at),
+                    jobs_before=day_jobs[opening.slot.date],
+                )
         if missed:
             await notifier.send(missed_openings_message(missed))
     except Exception as exc:
@@ -208,6 +216,7 @@ async def run_once(
         clicked = [result for result in report.results if result.clicked]
         if clicked:
             report.notified = await _notify(notifier, settings, clicked, ())
+        await _send_landings(notifier, report.landings)
         if error is not None and error is not exc:
             raise error from exc
         raise
@@ -255,6 +264,7 @@ async def run_once(
         control.max_jobs_per_day,
         report.skipped_too_soon,
     )
+    await _send_landings(notifier, report.landings)
     return report
 
 
@@ -324,7 +334,10 @@ async def _accept_fresh(
                     f", {seconds} s after the quick check saw it" if seconds is not None else "",
                 )
                 continue
-            _record(state, report, session, opening, result, clock(), seconds, ", straight from the open-order list")
+            _record(
+                state, report, session, opening, result, clock(), seconds,
+                jobs_before=booked[opening.slot.date], how=", straight from the open-order list",
+            )
             report.new.add(opening.slot)
 
 
@@ -336,6 +349,8 @@ def _record(
     result: ApplyResult,
     now: dt.datetime,
     seconds: float | None,
+    *,
+    jobs_before: int,
     how: str = "",
 ) -> None:
     log.info(
@@ -351,6 +366,8 @@ def _record(
     if result.clicked:
         state.record_apply(opening.slot, now)
         session.clicked.add((opening.slot, opening.clock))
+    if result.outcome in (ApplyOutcome.APPLIED, ApplyOutcome.UNVERIFIED):
+        state.expect_on_calendar(opening.slot, jobs_before, now, unsure=result.outcome is ApplyOutcome.UNVERIFIED)
 
 
 async def _accept_listed(session: SiteSession, applier: Applier, opening: Opening) -> ApplyResult | None:
@@ -433,6 +450,61 @@ def _note_job_changes(state: BotState, reading: MonthReading, now: dt.datetime) 
             _describe_jobs(was),
             when,
         )
+
+
+def _check_landings(state: BotState, reading: MonthReading, now: dt.datetime) -> list[LandingCheck]:
+    found = jobs_per_day(reading.slots)
+    checks = []
+    for key, entry in sorted(state.landing.items()):
+        try:
+            day = dt.date.fromisoformat(key)
+            expect = int(entry["expect"])
+            waited = (now - dt.datetime.fromisoformat(entry["at"])).total_seconds()
+            slots = tuple(Slot.parse(text) for text in entry["slots"])
+        except (KeyError, TypeError, ValueError):
+            slots = ()
+        if not slots:
+            log.warning("Dropped an unreadable calendar check (%s)", key)
+            del state.landing[key]
+            continue
+        if (day.year, day.month) != (reading.year, reading.month):
+            continue
+        missing = min(len(slots), max(0, expect - found[day]))
+        if missing and waited < LANDING_WAIT_S:
+            continue
+        del state.landing[key]
+        check = LandingCheck(day, slots, missing, entry.get("unsure") is True, max(1, round(waited / 60)))
+        if missing:
+            log.warning(
+                "%s: %d of %d accepted job(s) not on the calendar %d min after Accept",
+                check.label(), missing, len(slots), check.minutes,
+            )
+            state.add_activity(to_iso(now), str(slots[0]), "not landed", None)
+        else:
+            log.info("%s: the accepted job(s) are on the calendar", check.label())
+            if check.unsure:
+                state.add_activity(to_iso(now), str(slots[0]), "landed", None)
+        checks.append(check)
+    return checks
+
+
+async def _send_landings(notifier: Notifier, checks: list[LandingCheck]) -> None:
+    message = landing_message(checks)
+    if message is not None:
+        await notifier.send(message)
+
+
+def due_landing_month(settings: Settings, now: dt.datetime) -> tuple[int, int] | None:
+    due = []
+    for key, entry in StateStore(settings.state_path).load().landing.items():
+        try:
+            day = dt.date.fromisoformat(key)
+            waited = (now - dt.datetime.fromisoformat(entry["at"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if waited >= LANDING_WAIT_S:
+            due.append((-waited, (day.year, day.month)))
+    return min(due)[1] if due else None
 
 
 def _describe_jobs(jobs: dict[str, int]) -> str:

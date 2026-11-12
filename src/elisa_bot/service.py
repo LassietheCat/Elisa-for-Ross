@@ -13,7 +13,7 @@ from typing import Awaitable, Callable
 from playwright.async_api import Error as PlaywrightError
 
 from .config import Settings
-from .cycle import run_once, target_months
+from .cycle import due_landing_month, run_once, target_months
 from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
@@ -298,6 +298,7 @@ async def run_forever(
     loop = asyncio.get_running_loop()
     session: SiteSession | None = None
     switched_on: bool | None = None
+    forced: tuple[int, int] | None = None
     log.info("Bot running in %s; waiting for the switch", "test mode" if settings.test_mode else "LIVE mode")
     try:
         while not stop.is_set():
@@ -331,7 +332,13 @@ async def run_forever(
                     await session.start()
                     rotation.reset()
                     quick.reset()
-                month = None if read_all else rotation.next(target_months(clock().date(), settings.months_to_check))
+                due = None if read_all else due_landing_month(settings, clock())
+                if due is not None and due == forced:
+                    due = None
+                forced = due
+                if due is not None:
+                    log.info("Reading %04d-%02d now to check that an accepted job is on the calendar", *due)
+                month = None if read_all else due or rotation.next(target_months(clock().date(), settings.months_to_check))
                 hot, detected_at = quick.take_hot() if read_all else (None, None)
                 fresh = quick.take_fresh()
                 read_all = False

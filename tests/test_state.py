@@ -128,3 +128,20 @@ def test_job_types_are_known_codes_and_default_to_all(tmp_path):
     assert store.load().service_types == ["VRI"]
     store.path.write_text(json.dumps({"service_types": []}))
     assert store.load().service_types == ["VRI", "OPI", "OSI"]
+
+
+def test_accepted_jobs_are_expected_on_the_calendar_by_day_and_forgotten_once_the_day_is_past(tmp_path):
+    now = dt.datetime(2026, 11, 10, 17, 31, 8, tzinfo=ZoneInfo("America/New_York"))
+    state = BotState()
+    state.expect_on_calendar(Slot.parse("2026-11-27 PM"), 1, now, unsure=False)
+    state.expect_on_calendar(Slot.parse("2026-11-27 PM"), 5, now + dt.timedelta(seconds=1), unsure=True)
+    state.expect_on_calendar(Slot.parse("2026-11-30 AM"), 0, now, unsure=False)
+    assert state.landing == {
+        "2026-11-27": {"expect": 3, "slots": ["2026-11-27 PM", "2026-11-27 PM"], "unsure": True, "at": "2026-11-10T17:31:09-05:00"},
+        "2026-11-30": {"expect": 1, "slots": ["2026-11-30 AM"], "unsure": False, "at": "2026-11-10T17:31:08-05:00"},
+    }
+    store = StateStore(tmp_path / "state.json")
+    store.save(state)
+    assert store.load().landing == state.landing
+    state.prune(dt.date(2026, 11, 28))
+    assert list(state.landing) == ["2026-11-30"]

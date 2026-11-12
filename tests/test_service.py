@@ -15,6 +15,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from elisa_bot import service
 from elisa_bot.cycle import CycleReport
+from elisa_bot.models import Slot
 from elisa_bot.notify import Message
 from elisa_bot.service import FailureAlerts, MonthRotation, QuickCheck, next_delay, run_forever
 from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignInPaused, SiteBusy
@@ -663,3 +664,50 @@ async def test_the_start_times_of_new_orders_are_handed_on_once(tmp_path):
     await quick.check(session)
     assert await quick.check(session) is True
     assert quick.take_fresh() == [B, C] and quick.take_fresh() == []
+
+
+@pytest.mark.browser
+async def test_a_month_with_an_overdue_calendar_check_is_read_before_the_rotation_goes_on(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    state = BotState()
+    state.expect_on_calendar(Slot.parse("2026-12-03 PM"), 0, fixed_now() - dt.timedelta(minutes=10), unsure=False)
+    StateStore(settings.state_path).save(state)
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: any(m.subject.startswith("Elisa: not on your calendar") for m in capture.messages))
+        checked = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Checked ")]
+        assert checked[0].startswith("Checked 2026-12")
+        assert "Reading 2026-12 now to check that an accepted job is on the calendar" in caplog.text
+        assert capture.messages[0].subject == "Elisa: not on your calendar, Thu Dec 3 PM"
+        assert StateStore(settings.state_path).load().landing == {}
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.browser
+async def test_a_due_month_whose_read_fails_gives_the_next_read_back_to_the_rotation(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    state = BotState()
+    state.expect_on_calendar(Slot.parse("2026-12-03 PM"), 0, fixed_now() - dt.timedelta(minutes=10), unsure=False)
+    StateStore(settings.state_path).save(state)
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    mock.configure(schedule_error_times=1)
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: any(m.subject.startswith("Elisa: not on your calendar") for m in capture.messages))
+        reads = [
+            r.getMessage().split(":")[0].split(" now")[0]
+            for r in caplog.records
+            if r.getMessage().startswith(("Checked 20", "Reading 20", "Check failed"))
+        ]
+        assert reads[:4] == ["Reading 2026-12", "Check failed (data_request_failed), 1 in a row", "Checked 2026-10", "Reading 2026-12"]
+        assert reads[4] == "Checked 2026-12"
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)

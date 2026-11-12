@@ -689,3 +689,88 @@ async def test_an_accept_straight_from_the_list_counts_once_toward_the_daily_cap
         assert mock.stats()["accept_calls"] == ["1", "2", "4"]
     finally:
         await session.close()
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.now = fixed_now()
+
+    def __call__(self) -> dt.datetime:
+        return self.now
+
+    def wait(self, minutes: float) -> None:
+        self.now += dt.timedelta(minutes=minutes)
+
+
+async def read(settings, capture, clock, session, month=None):
+    return await run_once(settings, Selectors(), notifier=capture, now=clock, session=session, month=month)
+
+
+async def test_an_accept_elisa_calls_done_that_never_reaches_the_calendar_is_reported(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture, clock = Capture(), Clock()
+    session = await signed_in(settings)
+    try:
+        await read(settings, capture, clock, session)
+        mock.configure(accept_result_status="taken")
+        mock.set_work_orders([wo("2026-10-14", "AM", "available")])
+        report = await read(settings, capture, clock, session)
+        assert [r.outcome for r in report.results] == [ApplyOutcome.APPLIED]
+        assert [m.subject for m in capture.messages] == ["Elisa: applied Wed Oct 14 AM"]
+        clock.wait(1)
+        await read(settings, capture, clock, session, month=(2026, 10))
+        assert len(capture.messages) == 1
+        clock.wait(3)
+        await read(settings, capture, clock, session, month=(2026, 10))
+        assert capture.messages[-1] == Message(
+            "Elisa: not on your calendar, Wed Oct 14 AM",
+            "Not on your calendar: Wed Oct 14 AM, 4 minutes after the bot clicked Accept. Please check Elisa.",
+        )
+        assert StateStore(settings.state_path).load().landing == {}
+        clock.wait(5)
+        await read(settings, capture, clock, session, month=(2026, 10))
+        assert len(capture.messages) == 2
+    finally:
+        await session.close()
+
+
+async def test_jobs_added_to_a_day_that_already_had_one_are_checked_off_without_another_alert(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture, clock = Capture(), Clock()
+    session = await signed_in(settings)
+    try:
+        job = wo("2026-11-10", "AM", "assigned", "09:00")
+        mock.set_work_orders([job])
+        await read(settings, capture, clock, session)
+        mock.set_work_orders([job, wo("2026-11-10", "PM", "available", "13:00"), wo("2026-11-10", "PM", "available", "16:00")])
+        report = await read(settings, capture, clock, session, month=(2026, 11))
+        assert [r.outcome for r in report.results] == [ApplyOutcome.APPLIED, ApplyOutcome.APPLIED]
+        assert StateStore(settings.state_path).load().landing["2026-11-10"]["expect"] == 3
+        sent = len(capture.messages)
+        clock.wait(1)
+        await read(settings, capture, clock, session, month=(2026, 11))
+        assert StateStore(settings.state_path).load().landing == {}
+        assert len(capture.messages) == sent
+        assert "Tue Nov 10: the accepted job(s) are on the calendar" in caplog.text
+    finally:
+        await session.close()
+
+
+async def test_an_accept_straight_from_the_list_that_never_reaches_the_calendar_is_reported(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        mock.configure(accept_result_status="taken")
+        mock.set_work_orders([wo("2026-10-20", "AM", "assigned", "09:00"), wo("2026-10-15", "PM", "available", "14:00")])
+        report = await quick_check_then_read(settings, capture, session)
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-15 PM", ApplyOutcome.APPLIED)]
+        assert list(StateStore(settings.state_path).load().landing) == ["2026-10-15"]
+        clock = Clock()
+        clock.wait(3)
+        await read(settings, capture, clock, session, month=(2026, 10))
+        assert capture.messages[-1].subject == "Elisa: not on your calendar, Thu Oct 15 PM"
+        assert StateStore(settings.state_path).load().landing == {}
+    finally:
+        await session.close()

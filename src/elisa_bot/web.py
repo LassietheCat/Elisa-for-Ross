@@ -59,6 +59,8 @@ OUTCOMES = {
     "too soon": "skipped, starts too soon",
     "refused": "Elisa refused the Accept",
     "gone": "a new opening was gone before the bot could read it",
+    "landed": "on the calendar after all",
+    "not landed": "accepted, but not on the calendar; check Elisa",
 }
 FLASH = {
     "sent": "Test alert sent. Check your inbox.",
@@ -296,6 +298,7 @@ _DOT = {
     "error": "d-err", "unverified": "d-warn", "refused": "d-err",
     "test_mode": "d-skip", "skipped": "d-skip", "day off": "d-skip",
     "too close": "d-skip", "day full": "d-skip", "too soon": "d-skip",
+    "landed": "d-ok", "not landed": "d-err",
 }
 
 
@@ -411,7 +414,7 @@ def _stats_row(settings: Settings, state: BotState, now: dt.datetime) -> str:
     today = now.date().isoformat()
     counts = state.daily.get(today, {})
     events = [e for e in state.activity if str(e.get("at", "")).startswith(today)]
-    accepted = sum(1 for e in events if e.get("outcome") == "applied")
+    accepted = sum(1 for e in events if e.get("outcome") in ("applied", "landed"))
     missed = sum(1 for e in events if e.get("outcome") in ("missed", "gone"))
     reads = counts.get("reads", 0)
     failed = counts.get("failed", 0)

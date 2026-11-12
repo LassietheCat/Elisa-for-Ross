@@ -353,3 +353,20 @@ def test_the_page_says_whether_text_alerts_are_on(tmp_path):
     page = client.get("/").text
     assert "Text alerts: on" in page and "2 phones" in page
     assert "+15551112222" not in page
+
+
+def test_the_calendar_check_shows_in_recent_activity_and_a_settled_job_counts_as_accepted(tmp_path):
+    settings, client, _ = make(tmp_path)
+    state = BotState(baseline_done=True)
+    state.add_activity("2026-10-09T09:10:00-04:00", "2026-10-14 AM", "applied", 2.1)
+    state.add_activity("2026-10-09T09:11:00-04:00", "2026-10-15 PM", "unverified", 2.4)
+    state.add_activity("2026-10-09T09:13:00-04:00", "2026-10-15 PM", "landed", None)
+    state.add_activity("2026-10-09T09:14:00-04:00", "2026-10-16 AM", "applied", 1.0)
+    state.add_activity("2026-10-09T09:17:00-04:00", "2026-10-16 AM", "not landed", None)
+    StateStore(settings.state_path).save(state)
+    ControlStore(settings).update(by="test", now=NOW, enabled=True)
+    sign_in(client)
+    page = client.get("/").text
+    assert "Thu Oct 15 PM: on the calendar after all" in page
+    assert "Fri Oct 16 AM: accepted, but not on the calendar; check Elisa" in page
+    assert '<div class="n">3</div><div class="l">accepted today</div>' in page

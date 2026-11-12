@@ -205,7 +205,8 @@ when Elisa lists a new open work order or refuses one.
 - **Logs:** `journalctl -u elisa-bot --since today`; also `/var/lib/elisa-bot/data/logs/`.
 - **New jobs on the calendar:** `journalctl -u elisa-bot | grep "on the calendar"` lists
   every new, removed or changed job (date and AM/PM), with times, from the calendar
-  reads (within about 3 minutes).
+  reads (within about 3 minutes). The same search shows the check after each Accept:
+  "the accepted job(s) are on the calendar", or "not on the calendar N min after Accept".
 - **Fast accept:** `journalctl -u elisa-bot | grep -E "Fast accept ready|straight from"` shows
   when the bot learned Elisa's Accept request after starting, and each opening accepted
   straight from the open-order list.
@@ -229,7 +230,9 @@ when Elisa lists a new open work order or refuses one.
 | Bot switched off (Elisa's robot check) | Elisa asked for a robot check or a code at sign-in (reCAPTCHA since Oct 31). The bot stopped itself and won't retry. | Leave it off. Don't restart it or press ON: each sign-in attempt meets the same check, and Elisa disables accounts after too many failed sign-ins. |
 | Bot switched off (session expired) | The saved Elisa session (cookie file) expired. | Export fresh cookies from a signed-in browser session; replace `/etc/elisa-bot/secrets/cookies.json`; restart; switch on. |
 | Bot can't check right now | 3 checks in a row failed. | Usually fixes itself ("working again" follows). If not within 30 minutes: read the log, then `elisa-bot off`, `elisa-bot site-check`, `elisa-bot on`. |
-| Please check | Accept was sent but Elisa's answer didn't come, or was a server error, a rate limit or a sign-in error. | Look at Elisa. |
+| Please check | Accept was sent but Elisa's answer didn't come, or was a server error, a rate limit or a sign-in error. | Look at Elisa. The bot checks the calendar itself and follows up with one of the next two. |
+| Not on your calendar | The bot clicked Accept, usually with Elisa saying it worked, but 3 minutes later that day has fewer jobs than it should. | Look at Elisa. If the job isn't there, it isn't Anya's. If this repeats, send the developer the "not on the calendar" log lines. |
+| On your calendar after all | A "Please check" job did land. | Nothing. |
 | Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
 | Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
 | Bot may be missing openings | A calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |
