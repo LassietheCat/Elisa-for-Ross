@@ -104,16 +104,38 @@ def test_half_days_off_merge_into_whole_days(tmp_path):
     assert store.load().days_off == ["2026-11-03", "2026-11-05", "2026-11-06 AM"]
 
 
-def test_daily_counts_and_activity_stay_small(tmp_path):
+def test_daily_counts_and_activity_are_kept_fifteen_days_for_the_weekly_report(tmp_path):
     state = BotState()
     state.count(dt.date(2026, 10, 1), "reads")
-    state.count(dt.date(2026, 10, 20), "reads")
-    state.count(dt.date(2026, 10, 20), "reads")
+    state.count(dt.date(2026, 10, 5), "reads")
+    state.count(dt.date(2026, 10, 20), "reads", 2)
+    state.count(dt.date(2026, 10, 20), "on_calendar", 0)
+    state.add_activity("2026-10-04T23:59:00-04:00", None, "gone", 1.0)
+    state.add_activity("2026-10-05T00:00:00-04:00", None, "gone", 1.0)
     state.prune(dt.date(2026, 10, 20))
-    assert state.daily == {"2026-10-20": {"reads": 2}}
-    for i in range(60):
-        state.add_activity(f"2026-10-20T10:{i:02d}:00-04:00", None, "gone", 1.0)
-    assert len(state.activity) == 50 and state.activity[-1]["at"] == "2026-10-20T10:59:00-04:00"
+    assert state.daily == {"2026-10-05": {"reads": 1}, "2026-10-20": {"reads": 2}}
+    assert [e["at"] for e in state.activity] == ["2026-10-05T00:00:00-04:00"]
+    for i in range(2100):
+        state.add_activity("2026-10-20T10:00:00-04:00", None, "gone", 1.0)
+    assert len(state.activity) == 2000
+
+
+def test_gaps_in_watching_are_recorded_and_forgotten_after_fifteen_days():
+    start = dt.datetime(2026, 10, 1, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+    state = BotState()
+    state.watched(start)
+    state.watched(start + dt.timedelta(minutes=10))
+    state.watched(start + dt.timedelta(minutes=31))
+    assert state.watch == {
+        "since": "2026-10-01T09:00:00-04:00",
+        "last_ok": "2026-10-01T09:31:00-04:00",
+        "gaps": [["2026-10-01T09:10:00-04:00", "2026-10-01T09:31:00-04:00"]],
+    }
+    state.prune(dt.date(2026, 10, 17))
+    assert state.watch["gaps"] == [] and state.watch["since"] == "2026-10-01T09:00:00-04:00"
+    state.watch = {"since": 5, "last_ok": "garbage", "gaps": "none"}
+    state.watched(start)
+    assert state.watch == {"since": "2026-10-01T09:00:00-04:00", "last_ok": "2026-10-01T09:00:00-04:00", "gaps": []}
 
 
 def test_job_types_are_known_codes_and_default_to_all(tmp_path):

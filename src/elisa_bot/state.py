@@ -17,7 +17,9 @@ from .timeutil import to_iso
 log = logging.getLogger(__name__)
 
 STATE_VERSION = 1
-ACTIVITY_KEPT = 50
+ACTIVITY_MAX = 2000
+HISTORY_DAYS = 15
+WATCH_GAP_S = 600
 MAX_DAYS_OFF = 366
 MAX_JOBS_PER_DAY = 4
 SERVICE_TYPES = ("VRI", "OPI", "OSI")
@@ -40,13 +42,29 @@ class BotState:
     daily: dict[str, dict[str, int]] = field(default_factory=dict)
     jobs: dict[str, dict] = field(default_factory=dict)
     landing: dict[str, dict] = field(default_factory=dict)
+    watch: dict = field(default_factory=dict)
 
-    def count(self, day: dt.date, key: str) -> None:
+    def count(self, day: dt.date, key: str, amount: int = 1) -> None:
+        if amount <= 0:
+            return
         entry = self.daily.setdefault(day.isoformat(), {})
-        entry[key] = entry.get(key, 0) + 1
+        entry[key] = entry.get(key, 0) + amount
 
     def add_activity(self, at: str, slot: str | None, outcome: str, seconds: float | None) -> None:
-        self.activity = [*self.activity, {"at": at, "slot": slot, "outcome": outcome, "seconds": seconds}][-ACTIVITY_KEPT:]
+        self.activity = [*self.activity, {"at": at, "slot": slot, "outcome": outcome, "seconds": seconds}][-ACTIVITY_MAX:]
+
+    def watched(self, now: dt.datetime) -> None:
+        watch = self.watch if isinstance(self.watch, dict) else {}
+        raw = watch.get("gaps")
+        gaps = [gap for gap in raw if isinstance(gap, list) and len(gap) == 2] if isinstance(raw, list) else []
+        last = watch.get("last_ok")
+        try:
+            if isinstance(last, str) and (now - dt.datetime.fromisoformat(last)).total_seconds() > WATCH_GAP_S:
+                gaps.append([last, to_iso(now)])
+        except (TypeError, ValueError):
+            pass
+        since = watch.get("since")
+        self.watch = {"since": since if isinstance(since, str) else to_iso(now), "last_ok": to_iso(now), "gaps": gaps}
 
     def seen_slots(self) -> set[Slot]:
         return {Slot.parse(text) for text in self.seen}
@@ -81,7 +99,11 @@ class BotState:
         self.applies_by_day = {
             k: v for k, v in self.applies_by_day.items() if dt.date.fromisoformat(k) >= cutoff
         }
-        self.daily = {k: v for k, v in self.daily.items() if dt.date.fromisoformat(k) >= cutoff}
+        history = (today - dt.timedelta(days=HISTORY_DAYS)).isoformat()
+        self.daily = {k: v for k, v in self.daily.items() if k >= history}
+        self.activity = [e for e in self.activity if str(e.get("at"))[:10] >= history][-ACTIVITY_MAX:]
+        if isinstance(self.watch, dict) and isinstance(self.watch.get("gaps"), list):
+            self.watch["gaps"] = [g for g in self.watch["gaps"] if isinstance(g, list) and len(g) == 2 and str(g[1])[:10] >= history]
         self.jobs = {k: v for k, v in self.jobs.items() if k >= f"{today:%Y-%m}"}
         self.landing = {k: v for k, v in self.landing.items() if k >= today.isoformat()}
 

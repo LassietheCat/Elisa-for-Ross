@@ -39,6 +39,7 @@ cp .env.example .env   # fill it in; keep it private (it is git-ignored)
 .venv/bin/python -m elisa_bot once --live      # one full run that really clicks Accept
 .venv/bin/python -m elisa_bot test-email       # send a test alert (email, and text if set up)
 .venv/bin/python -m elisa_bot test-heartbeat   # ping the outside monitor once
+.venv/bin/python -m elisa_bot digest           # the weekly report for the last 7 days (--send emails it)
 .venv/bin/python -m elisa_bot reset-state --yes
 ```
 
@@ -131,6 +132,16 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   under the other half from the one its start time suggests. When a check falls due, that
   month is read next instead of waiting for its turn, which changes the order of reads
   but adds none.
+- **Weekly report:** every Monday at 8 AM (`TIMEZONE`) an email sums up the week before:
+  openings seen, accepted (dates and AM/PM), taken by someone else first, held back by each
+  rule (already booked, the 3-hour spacing, the daily limit, minimum notice, days off),
+  how fast the bot accepted, the calendar checks after Accept, and how much of the week it
+  was watching, with every gap of 10 minutes or more in which no calendar read succeeded
+  (switched off, restarting, or Elisa not answering). Email only, never a text. It needs no
+  extra requests: the bot keeps 15 days of its activity and daily counts in
+  `data/state.json` for it. The first report goes out the Monday after a deploy, and its
+  watching figure starts from the deploy. `digest` prints the report for the last 7 days
+  at any time; `digest --send` emails it. `WEEKLY_DIGEST=false` turns it off.
 - **Heartbeat:** with `HEARTBEAT_URL` set (for example a healthchecks.io check), the bot
   pings it every `HEARTBEAT_SECONDS` (60) while it's working, or deliberately switched
   off. If the server stops, the bot crashes, or nothing has gone well for 5 minutes, the
@@ -245,6 +256,7 @@ alerts are configured; everything is emailed either way:
 | Bot is working again | checks work again after that alert | always | yes |
 | Bot may be missing openings | a calendar tag can't be read | always | yes |
 | Test alert | the page's button or `test-email` | — | yes |
+| Weekly report | Mondays at 8 AM: the past week's openings, accepts, rule skips, speed and watching time | `WEEKLY_DIGEST` | no |
 
 ### Text (SMS) alerts
 

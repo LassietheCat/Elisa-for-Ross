@@ -94,3 +94,11 @@ def test_status_reports_whether_the_outside_monitor_is_working(tmp_path):
 
     off.status_path.write_text("not json")
     assert _monitor_line(on) == "on, nothing reported yet"
+
+
+def test_digest_shows_the_last_seven_days_and_can_email_them(tmp_path, capsys):
+    assert main(env(tmp_path) + ["digest"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Elisa: weekly report, ") and "Openings the bot saw: none." in out and "Report sent." not in out
+    assert main(env(tmp_path) + ["digest", "--send"]) == 0
+    assert "Report sent." in capsys.readouterr().out

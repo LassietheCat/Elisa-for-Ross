@@ -124,6 +124,7 @@ class Settings:
     quick_check_seconds: int = 20
     heartbeat_url: str | None = field(default=None, repr=False)
     heartbeat_seconds: int = 60
+    weekly_digest: bool = True
 
     notify_missed: bool = True
     notify_skipped: bool = True
@@ -212,6 +213,7 @@ class Settings:
             quick_check_seconds=e.integer("QUICK_CHECK_SECONDS", 20, lo=0, hi=300),
             heartbeat_url=e.secret("HEARTBEAT_URL"),
             heartbeat_seconds=e.integer("HEARTBEAT_SECONDS", 60, lo=10, hi=3600),
+            weekly_digest=e.boolean("WEEKLY_DIGEST", True),
             notify_missed=e.boolean("NOTIFY_MISSED", True),
             notify_skipped=e.boolean("NOTIFY_SKIPPED", True),
             smtp_provider=provider,
@@ -248,6 +250,10 @@ class Settings:
     @property
     def status_path(self) -> Path:
         return self.data_dir / "status.json"
+
+    @property
+    def digest_path(self) -> Path:
+        return self.data_dir / "digest.json"
 
     @property
     def log_dir(self) -> Path:

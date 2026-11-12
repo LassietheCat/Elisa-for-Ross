@@ -98,3 +98,9 @@ def test_the_month_with_the_longest_overdue_check_is_read_next(tmp_path):
     assert due_landing_month(settings, later(LANDING_WAIT_S - 1)) is None
     assert due_landing_month(settings, later(LANDING_WAIT_S)) == (2026, 12)
     assert due_landing_month(settings, later(LANDING_WAIT_S + 60)) == (2026, 12)
+
+
+def test_each_check_is_counted_for_the_weekly_report():
+    state = expecting(("2026-11-27 PM", 1), ("2026-11-27 PM", 1), ("2026-11-12 AM", 0))
+    _check_landings(state, november({"2026-11-27 AM": SlotTags(assigned=2)}), later(LANDING_WAIT_S))
+    assert state.daily == {"2026-11-10": {"on_calendar": 1, "not_on_calendar": 2}}

@@ -14,6 +14,7 @@ import pytest
 from playwright.async_api import Error as PlaywrightError
 
 from elisa_bot import service
+from elisa_bot.config import Settings
 from elisa_bot.cycle import CycleReport
 from elisa_bot.models import Slot
 from elisa_bot.notify import Message
@@ -22,7 +23,7 @@ from elisa_bot.site.errors import CalendarNotRendered, DataRequestFailed, SignIn
 from elisa_bot.site.live import LiveChannel
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
-from elisa_bot.state import BotState, ControlStore, StateStore
+from elisa_bot.state import BotState, ControlStore, StateStore, write_json
 from tests.conftest import FIXED_NOW, fixed_now, make_settings, wo
 
 
@@ -708,6 +709,86 @@ async def test_a_due_month_whose_read_fails_gives_the_next_read_back_to_the_rota
         ]
         assert reads[:4] == ["Reading 2026-12", "Check failed (data_request_failed), 1 in a row", "Checked 2026-10", "Reading 2026-12"]
         assert reads[4] == "Checked 2026-12"
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+NY = ZoneInfo("America/New_York")
+
+
+async def test_the_weekly_report_goes_out_once_on_monday_morning_and_not_for_the_week_it_was_installed(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    capture = Capture()
+    now, timer = [dt.datetime(2026, 11, 12, 15, 0, tzinfo=NY)], [0.0]
+    digest = service.WeeklyDigest(settings, capture, lambda: now[0], timer=lambda: timer[0])
+    digest.tick()
+    assert json.loads(settings.digest_path.read_text())["week"] == "2026-11-02"
+    assert digest.task is None
+    now[0], timer[0] = dt.datetime(2026, 11, 16, 7, 59, tzinfo=NY), 100
+    digest.tick()
+    assert digest.task is None
+    now[0], timer[0] = dt.datetime(2026, 11, 16, 8, 0, tzinfo=NY), 200
+    digest.tick()
+    await digest.task
+    assert [(m.subject, m.sms) for m in capture.messages] == [("Elisa: weekly report, Mon Nov 9 to Sun Nov 15", False)]
+    assert json.loads(settings.digest_path.read_text())["week"] == "2026-11-09"
+    sent = digest.task
+    timer[0] = 300
+    digest.tick()
+    assert digest.task is sent and len(capture.messages) == 1
+
+
+async def test_a_weekly_report_that_fails_to_send_is_tried_again_an_hour_later(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    write_json(settings.digest_path, {"week": "2026-11-02"})
+    capture = Capture(fail_first=1)
+    timer = [0.0]
+    digest = service.WeeklyDigest(settings, capture, lambda: dt.datetime(2026, 11, 16, 9, 0, tzinfo=NY), timer=lambda: timer[0])
+    digest.tick()
+    await digest.task
+    failed = digest.task
+    timer[0] = 3599
+    digest.tick()
+    assert digest.task is failed and capture.messages == []
+    timer[0] = 3600
+    digest.tick()
+    await digest.task
+    assert len(capture.messages) == 1
+
+
+async def test_no_weekly_report_when_it_is_turned_off(tmp_path):
+    settings = dataclasses.replace(Settings(data_dir=tmp_path), weekly_digest=False)
+    digest = service.WeeklyDigest(settings, Capture(), lambda: dt.datetime(2026, 11, 16, 9, 0, tzinfo=NY))
+    digest.tick()
+    assert digest.task is None and not settings.digest_path.exists()
+
+
+async def test_the_weekly_report_still_goes_out_while_the_bot_is_switched_off(tmp_path):
+    settings = fast(make_settings(tmp_path, "http://127.0.0.1:9"))
+    write_json(settings.digest_path, {"week": "2026-09-21"})
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: bool(capture.messages), timeout=10)
+        assert capture.messages[0].subject == "Elisa: weekly report, Mon Sep 28 to Sun Oct 4"
+        assert json.loads(settings.digest_path.read_text())["week"] == "2026-09-28"
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 30)
+
+
+@pytest.mark.browser
+async def test_the_running_bot_sends_the_weekly_report_between_checks(mock, tmp_path):
+    settings = fast(make_settings(tmp_path, mock.base_url))
+    write_json(settings.digest_path, {"week": "2026-09-21"})
+    ControlStore(settings).update(by="test", now=fixed_now(), enabled=True)
+    capture = Capture()
+    stop, task = start(settings, capture)
+    try:
+        await until(lambda: any(m.subject.startswith("Elisa: weekly report") for m in capture.messages))
+        assert json.loads(settings.digest_path.read_text())["week"] == "2026-09-28"
+        assert StateStore(settings.state_path).load().last_run_ok is True
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)

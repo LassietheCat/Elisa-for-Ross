@@ -203,6 +203,8 @@ when Elisa lists a new open work order or refuses one.
 - **Test alert:** the page's **Send test alert** button, or `elisa-bot test-email`. Both
   go to every recipient.
 - **Logs:** `journalctl -u elisa-bot --since today`; also `/var/lib/elisa-bot/data/logs/`.
+- **Weekly report:** `sudo -u elisa elisa-bot digest` prints the report for the last 7 days;
+  `--send` emails it. `data/digest.json` records the last week sent.
 - **New jobs on the calendar:** `journalctl -u elisa-bot | grep "on the calendar"` lists
   every new, removed or changed job (date and AM/PM), with times, from the calendar
   reads (within about 3 minutes). The same search shows the check after each Accept:
@@ -233,6 +235,7 @@ when Elisa lists a new open work order or refuses one.
 | Please check | Accept was sent but Elisa's answer didn't come, or was a server error, a rate limit or a sign-in error. | Look at Elisa. The bot checks the calendar itself and follows up with one of the next two. |
 | Not on your calendar | The bot clicked Accept, usually with Elisa saying it worked, but 3 minutes later that day has fewer jobs than it should. | Look at Elisa. If the job isn't there, it isn't Anya's. If this repeats, send the developer the "not on the calendar" log lines. |
 | On your calendar after all | A "Please check" job did land. | Nothing. |
+| Weekly report | Monday 8 AM summary of the week before. "Gaps of 10 minutes or more" are times when no calendar read succeeded: switched off, restarting, or Elisa not answering. | Nothing. If a gap is unexpected, read the log for that time. |
 | Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
 | Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
 | Bot may be missing openings | A calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |

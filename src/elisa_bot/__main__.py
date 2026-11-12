@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import calendar
 import dataclasses
+import datetime as dt
 import json
 import signal
 import sys
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from .config import ConfigError, Settings
 from .cycle import CycleReport, run_check, run_once
+from .digest import weekly_digest
 from .livecheck import SiteCheckReport, run_site_check, site_check_seconds
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
@@ -42,6 +44,8 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="show the switch and the last check")
     sub.add_parser("test-email", help="send a test alert")
     sub.add_parser("test-heartbeat", help="ping the outside monitor once")
+    digest = sub.add_parser("digest", help="show the weekly report for the last 7 days")
+    digest.add_argument("--send", action="store_true", help="also email it now")
     reset = sub.add_parser("reset-state", help="forget saved openings; the next run records a fresh baseline")
     reset.add_argument("--yes", action="store_true", help="confirm")
     return parser
@@ -152,6 +156,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "test-email":
         sent = asyncio.run(build_notifier(settings).send(test_message()))
         print("Test alert sent." if sent else "Test alert failed; see the log.")
+        return 0 if sent else 1
+    if args.command == "digest":
+        now = now_in(settings.timezone)
+        state = StateStore(settings.state_path).load()
+        message = weekly_digest(state, now.date() - dt.timedelta(days=6), now.date() + dt.timedelta(days=1), now)
+        print(f"{message.subject}\n\n{message.text}", end="")
+        if not args.send:
+            return 0
+        sent = asyncio.run(build_notifier(settings).send(message))
+        print("Report sent." if sent else "The report could not be sent; see the log.")
         return 0 if sent else 1
     if args.command == "test-heartbeat":
         if not settings.heartbeat_url:

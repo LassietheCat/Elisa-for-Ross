@@ -250,6 +250,7 @@ async def run_once(
     state.last_run_ok = True
     state.last_error = None
     state.count(today, "reads")
+    state.watched(clock())
     state.prune(today)
     store.save(state)
 
@@ -473,6 +474,8 @@ def _check_landings(state: BotState, reading: MonthReading, now: dt.datetime) ->
         if missing and waited < LANDING_WAIT_S:
             continue
         del state.landing[key]
+        state.count(now.date(), "on_calendar", len(slots) - missing)
+        state.count(now.date(), "not_on_calendar", missing)
         check = LandingCheck(day, slots, missing, entry.get("unsure") is True, max(1, round(waited / 60)))
         if missing:
             log.warning(

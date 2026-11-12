@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import calendar
+import contextlib
 import datetime as dt
+import json
 import logging
 import time
 import urllib.error
@@ -14,11 +16,12 @@ from playwright.async_api import Error as PlaywrightError
 
 from .config import Settings
 from .cycle import due_landing_month, run_once, target_months
+from .digest import report_week, weekly_digest
 from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
-from .state import ControlStore, write_json
+from .state import ControlStore, StateStore, write_json
 from .timeutil import now_in, to_iso
 
 log = logging.getLogger(__name__)
@@ -31,6 +34,8 @@ QUICK_SILENCE_S = 300
 QUICK_MAX_S = 120
 QUICK_RECOVER_S = 1800
 HEARTBEAT_STALE_S = 300
+DIGEST_LOOK_S = 60
+DIGEST_RETRY_S = 3600
 STATUS_EVERY_S = 15
 MONITOR_BODY_PEEK = 200
 MONITOR_UNKNOWN = "not found"
@@ -253,6 +258,69 @@ def monitor_ping_error(url: str) -> str | None:
     return None
 
 
+class WeeklyDigest:
+    def __init__(
+        self,
+        settings: Settings,
+        notifier: Notifier,
+        clock: Callable[[], dt.datetime],
+        timer: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.settings = settings
+        self.notifier = notifier
+        self.clock = clock
+        self.timer = timer
+        self.look_at = 0.0
+        self.sent: dt.date | None = None
+        self.task: asyncio.Task | None = None
+
+    def tick(self) -> None:
+        if not self.settings.weekly_digest or self.timer() < self.look_at:
+            return
+        if self.task is not None and not self.task.done():
+            return
+        self.look_at = self.timer() + DIGEST_LOOK_S
+        now = self.clock()
+        week = report_week(now)
+        known = [w for w in (self._recorded(), self.sent) if w is not None]
+        if not known:
+            self._record(week)
+        elif max(known) < week:
+            self.task = asyncio.create_task(self._send(week, now))
+
+    async def close(self) -> None:
+        if self.task is not None and not self.task.done():
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(self.task, 30)
+
+    async def _send(self, week: dt.date, now: dt.datetime) -> None:
+        try:
+            message = weekly_digest(StateStore(self.settings.state_path).load(), week, week + dt.timedelta(days=7), now)
+            sent = await self.notifier.send(message)
+        except Exception:
+            log.exception("The weekly report could not be built or sent; trying again in an hour")
+            sent = False
+        if sent:
+            self.sent = week
+            self._record(week)
+            log.info("Weekly report sent for the week of %s", week.isoformat())
+        else:
+            self.look_at = self.timer() + DIGEST_RETRY_S
+            log.warning("The weekly report was not sent; trying again in an hour")
+
+    def _recorded(self) -> dt.date | None:
+        try:
+            return dt.date.fromisoformat(json.loads(self.settings.digest_path.read_text(encoding="utf-8"))["week"])
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def _record(self, week: dt.date) -> None:
+        try:
+            write_json(self.settings.digest_path, {"week": week.isoformat(), "at": to_iso(self.clock())})
+        except OSError as exc:
+            log.warning("Could not record the weekly report (%s)", type(exc).__name__)
+
+
 class FailureAlerts:
     def __init__(self, notifier: Notifier, *, after: int = ALERT_AFTER_FAILURES):
         self.notifier = notifier
@@ -293,6 +361,7 @@ async def run_forever(
     rotation = MonthRotation()
     quick = QuickCheck(settings, clock)
     heartbeat = Heartbeat(settings.heartbeat_url, settings.heartbeat_seconds, clock=clock)
+    digest = WeeklyDigest(settings, notifier, clock)
     status = StatusFile(settings, clock)
     read_all = False
     loop = asyncio.get_running_loop()
@@ -313,6 +382,7 @@ async def run_forever(
                 alerts.reset()
                 heartbeat.healthy()
                 await heartbeat.beat()
+                digest.tick()
                 status.write(quick, heartbeat)
                 await _sleep(stop, 1.0)
                 continue
@@ -406,19 +476,21 @@ async def run_forever(
                 quick=(lambda: quick.check(session)) if can_quick else None,
                 quick_every=quick.every,
                 quick_due=quick.due,
-                tick=lambda: _tick(heartbeat, quick, status),
+                tick=lambda: _tick(heartbeat, quick, status, digest),
                 live=(lambda: quick.live(session)) if can_live else None,
             )
     finally:
+        await digest.close()
         if session is not None:
             await _shut(session, logout=settings.logout_when_off)
         log.info("Bot stopped")
 
 
-async def _tick(heartbeat: Heartbeat, quick: QuickCheck, status: StatusFile) -> None:
+async def _tick(heartbeat: Heartbeat, quick: QuickCheck, status: StatusFile, digest: WeeklyDigest) -> None:
     if quick.answered_at is not None and (heartbeat.healthy_at is None or quick.answered_at > heartbeat.healthy_at):
         heartbeat.healthy_at = quick.answered_at
     await heartbeat.beat()
+    digest.tick()
     status.write(quick, heartbeat)
 
 

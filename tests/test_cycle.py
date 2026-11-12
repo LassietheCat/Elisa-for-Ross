@@ -774,3 +774,20 @@ async def test_an_accept_straight_from_the_list_that_never_reaches_the_calendar_
         assert StateStore(settings.state_path).load().landing == {}
     finally:
         await session.close()
+
+
+async def test_each_good_read_is_noted_and_a_long_silence_is_kept_as_a_gap(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url)
+    capture, clock = Capture(), Clock()
+    session = await signed_in(settings)
+    try:
+        await read(settings, capture, clock, session, month=(2026, 10))
+        clock.wait(15)
+        await read(settings, capture, clock, session, month=(2026, 10))
+        assert StateStore(settings.state_path).load().watch == {
+            "since": "2026-10-07T10:00:00-04:00",
+            "last_ok": "2026-10-07T10:15:00-04:00",
+            "gaps": [["2026-10-07T10:00:00-04:00", "2026-10-07T10:15:00-04:00"]],
+        }
+    finally:
+        await session.close()
