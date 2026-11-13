@@ -115,7 +115,7 @@ def test_daily_counts_and_activity_are_kept_fifteen_days_for_the_weekly_report(t
     state.prune(dt.date(2026, 10, 20))
     assert state.daily == {"2026-10-05": {"reads": 1}, "2026-10-20": {"reads": 2}}
     assert [e["at"] for e in state.activity] == ["2026-10-05T00:00:00-04:00"]
-    for i in range(2100):
+    for _ in range(2100):
         state.add_activity("2026-10-20T10:00:00-04:00", None, "gone", 1.0)
     assert len(state.activity) == 2000
 
@@ -130,12 +130,13 @@ def test_gaps_in_watching_are_recorded_and_forgotten_after_fifteen_days():
         "since": "2026-10-01T09:00:00-04:00",
         "last_ok": "2026-10-01T09:31:00-04:00",
         "gaps": [["2026-10-01T09:10:00-04:00", "2026-10-01T09:31:00-04:00"]],
+        "limit": 600,
     }
     state.prune(dt.date(2026, 10, 17))
     assert state.watch["gaps"] == [] and state.watch["since"] == "2026-10-01T09:00:00-04:00"
     state.watch = {"since": 5, "last_ok": "garbage", "gaps": "none"}
     state.watched(start)
-    assert state.watch == {"since": "2026-10-01T09:00:00-04:00", "last_ok": "2026-10-01T09:00:00-04:00", "gaps": []}
+    assert state.watch == {"since": "2026-10-01T09:00:00-04:00", "last_ok": "2026-10-01T09:00:00-04:00", "gaps": [], "limit": 600}
 
 
 def test_job_types_are_known_codes_and_default_to_all(tmp_path):
@@ -159,11 +160,37 @@ def test_accepted_jobs_are_expected_on_the_calendar_by_day_and_forgotten_once_th
     state.expect_on_calendar(Slot.parse("2026-11-27 PM"), 5, now + dt.timedelta(seconds=1), unsure=True)
     state.expect_on_calendar(Slot.parse("2026-11-30 AM"), 0, now, unsure=False)
     assert state.landing == {
-        "2026-11-27": {"expect": 3, "slots": ["2026-11-27 PM", "2026-11-27 PM"], "unsure": True, "at": "2026-11-10T17:31:09-05:00"},
-        "2026-11-30": {"expect": 1, "slots": ["2026-11-30 AM"], "unsure": False, "at": "2026-11-10T17:31:08-05:00"},
+        "2026-11-27": {"expect": 3, "slots": ["2026-11-27 PM", "2026-11-27 PM"], "unsure": ["2026-11-27 PM"], "at": "2026-11-10T17:31:09-05:00"},
+        "2026-11-30": {"expect": 1, "slots": ["2026-11-30 AM"], "unsure": [], "at": "2026-11-10T17:31:08-05:00"},
     }
     store = StateStore(tmp_path / "state.json")
     store.save(state)
     assert store.load().landing == state.landing
     state.prune(dt.date(2026, 11, 28))
     assert list(state.landing) == ["2026-11-30"]
+
+
+def test_at_a_slow_check_interval_a_normal_wait_between_reads_is_not_a_gap():
+    start = dt.datetime(2026, 10, 1, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+    state = BotState()
+    state.watched(start, poll_seconds=600)
+    state.watched(start + dt.timedelta(seconds=650), poll_seconds=600)
+    assert state.watch["gaps"] == [] and state.watch["limit"] == 1200
+    state.watched(start + dt.timedelta(seconds=1950), poll_seconds=600)
+    assert state.watch["gaps"] == [["2026-10-01T09:10:50-04:00", "2026-10-01T09:32:30-04:00"]]
+
+
+def test_a_state_file_with_the_wrong_kinds_of_values_loads_safely_and_still_prunes(tmp_path, caplog):
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({
+        "landing": [],
+        "watch": "broken",
+        "activity": [{"at": "2026-10-20T10:00:00-04:00", "slot": None, "outcome": "gone", "seconds": 1.0}, "junk", 5],
+        "daily": {"2026-10-19": [], "2026-10-20": {"reads": 3}},
+    }))
+    state = StateStore(path).load()
+    assert state.landing == {} and state.watch == {} and len(state.activity) == 1
+    assert state.daily == {"2026-10-20": {"reads": 3}}
+    assert "ignored landing, which isn't a dict" in caplog.text
+    state.prune(dt.date(2026, 10, 20))
+    assert len(state.activity) == 1

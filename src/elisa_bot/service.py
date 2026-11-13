@@ -275,7 +275,8 @@ class WeeklyDigest:
         self.task: asyncio.Task | None = None
 
     def tick(self) -> None:
-        if not self.settings.weekly_digest or self.timer() < self.look_at:
+        settings = self.settings
+        if not settings.weekly_digest or (settings.sms_enabled and not settings.email_enabled) or self.timer() < self.look_at:
             return
         if self.task is not None and not self.task.done():
             return

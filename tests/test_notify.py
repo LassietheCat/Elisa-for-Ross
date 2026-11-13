@@ -6,6 +6,9 @@ import dataclasses
 import logging
 import smtplib
 import socket
+import threading
+import time
+import urllib.error
 import urllib.parse
 
 import pytest
@@ -145,21 +148,38 @@ def sms_settings(**overrides) -> Settings:
 @pytest.fixture
 def fake_twilio(monkeypatch):
     posts: list[dict] = []
+    lock = threading.Lock()
 
     def urlopen(request, timeout=None):
-        if fake_twilio.fail:
-            raise OSError("twilio unreachable")
-        posts.append(
-            {
-                "url": request.full_url,
-                "method": request.get_method(),
-                "auth": request.get_header("Authorization"),
-                "form": {k: v[0] for k, v in urllib.parse.parse_qs(request.data.decode()).items()},
-            }
-        )
+        with lock:
+            fake_twilio.calls += 1
+            fake_twilio.in_flight += 1
+            fake_twilio.most_at_once = max(fake_twilio.most_at_once, fake_twilio.in_flight)
+        try:
+            time.sleep(fake_twilio.delay)
+            if fake_twilio.fail:
+                raise OSError("twilio unreachable")
+            if fake_twilio.status:
+                raise urllib.error.HTTPError(request.full_url, fake_twilio.status, "refused", None, None)
+            posts.append(
+                {
+                    "url": request.full_url,
+                    "method": request.get_method(),
+                    "auth": request.get_header("Authorization"),
+                    "form": {k: v[0] for k, v in urllib.parse.parse_qs(request.data.decode()).items()},
+                }
+            )
+        finally:
+            with lock:
+                fake_twilio.in_flight -= 1
         return contextlib.nullcontext()
 
     fake_twilio.fail = False
+    fake_twilio.status = 0
+    fake_twilio.delay = 0.0
+    fake_twilio.calls = 0
+    fake_twilio.in_flight = 0
+    fake_twilio.most_at_once = 0
     fake_twilio.posts = posts
     monkeypatch.setattr(notify.urllib.request, "urlopen", urlopen)
     return fake_twilio
@@ -185,7 +205,7 @@ async def test_text_is_sent_to_every_number(fake_twilio, caplog):
 async def test_informational_alerts_do_not_send_a_text(fake_twilio):
     message = cycle_message([result("2026-10-20 AM", ApplyOutcome.MISSED)])
     assert message.sms is False
-    assert await notify.SmsNotifier(sms_settings()).send(message)
+    assert not await notify.SmsNotifier(sms_settings()).send(message)
     assert fake_twilio.posts == []
 
 
@@ -393,3 +413,30 @@ def test_a_missing_job_leads_the_subject_when_both_kinds_arrive_together():
         "Not on your calendar: Mon Nov 16 AM, 3 minutes after the bot clicked Accept. "
         "Please check Elisa. On your calendar after all: Thu Nov 12 AM."
     )
+
+
+async def test_an_email_only_message_counts_as_sent_only_when_the_email_went(fake_smtp, fake_twilio):
+    report = Message("Elisa: weekly report, Mon Nov 9 to Sun Nov 15", "Week of Mon Nov 9 to Sun Nov 15.", sms=False)
+    both = notify.MultiNotifier([EmailNotifier(email_settings(), retries=0), notify.SmsNotifier(sms_settings(), retries=0)])
+    fake_smtp.fail = True
+    assert not await both.send(report)
+    fake_smtp.fail = False
+    assert await both.send(report)
+    assert fake_twilio.posts == []
+
+
+async def test_texts_go_to_every_number_at_once(fake_twilio):
+    fake_twilio.delay = 0.3
+    numbers = ("+15551112222", "+15553334444", "+15555556666")
+    assert await notify.SmsNotifier(sms_settings(alert_sms_to=numbers)).send(Message("s", "t"))
+    assert fake_twilio.most_at_once == 3 and len(fake_twilio.posts) == 3
+
+
+async def test_a_text_twilio_refuses_is_not_retried_but_a_rate_limit_is(fake_twilio):
+    one = sms_settings(alert_sms_to=("+15551112222",))
+    fake_twilio.status = 401
+    assert not await notify.SmsNotifier(one, retries=2, retry_delay_s=0).send(Message("s", "t"))
+    assert fake_twilio.calls == 1
+    fake_twilio.status, fake_twilio.calls = 429, 0
+    assert not await notify.SmsNotifier(one, retries=2, retry_delay_s=0).send(Message("s", "t"))
+    assert fake_twilio.calls == 3

@@ -36,7 +36,7 @@ def weekly_digest(state: BotState, start: dt.date, end: dt.date, now: dt.datetim
     first, last = start.isoformat(), end.isoformat()
     events = [e for e in state.activity if isinstance(e, dict) and first <= str(e.get("at"))[:10] < last]
     span = f"{_day(start)} to {_day(end - dt.timedelta(days=1))}"
-    so_far = " (so far)" if now < _midnight(end, now) else ""
+    so_far = " (so far)" if now.timestamp() < _midnight(end, now.tzinfo).timestamp() else ""
     lines = [f"Week of {span}{so_far}.", ""]
     lines += _openings(events)
     lines += _speed(events)
@@ -53,7 +53,8 @@ def _openings(events: list[dict]) -> list[str]:
     accepted = _slots(events, "applied")
     lines = [f"Openings the bot saw: {seen}", f"- Accepted: {counts['applied']}" + (f" ({_labels(accepted)})" if accepted else "")]
     if counts["unverified"]:
-        lines.append(f'- Accept clicked but not confirmed ("please check"): {counts["unverified"]}')
+        later = f" ({counts['landed']} on the calendar after all)" if counts["landed"] else ""
+        lines.append(f'- Accept clicked but not confirmed ("please check"): {counts["unverified"]}{later}')
     lines.append(f"- Taken by someone else first: {counts['missed'] + counts['gone']}")
     lines.append(f"- Not accepted because of the rules: {sum(counts[key] for key, _ in RULES)}")
     for key, wording in RULES:
@@ -86,29 +87,32 @@ def _on_calendar(state: BotState, first: str, last: str) -> list[str]:
 
 
 def _watching(state: BotState, start: dt.date, end: dt.date, now: dt.datetime) -> list[str]:
+    tz = now.tzinfo
+    utc_now = now.astimezone(dt.timezone.utc)
     watch = state.watch if isinstance(state.watch, dict) else {}
-    begin, finish = _midnight(start, now), min(_midnight(end, now), now)
-    since = _moment(watch.get("since"), now)
+    begin, finish = _midnight(start, tz), min(_midnight(end, tz), utc_now)
+    since = _moment(watch.get("since"))
     lines = []
     if since is None or max(begin, since) >= finish:
         lines.append("Watching: not measured yet.")
     else:
         measured = max(begin, since)
         raw = watch.get("gaps") if isinstance(watch.get("gaps"), list) else []
-        gaps = [(_moment(g[0], now), _moment(g[1], now)) for g in raw if isinstance(g, list) and len(g) == 2]
-        last_ok = _moment(watch.get("last_ok"), now)
-        if last_ok is not None and (now - last_ok).total_seconds() > WATCH_GAP_S:
-            gaps.append((last_ok, now))
+        gaps = [(_moment(g[0]), _moment(g[1])) for g in raw if isinstance(g, list) and len(g) == 2]
+        limit = watch["limit"] if type(watch.get("limit")) is int else WATCH_GAP_S
+        last_ok = _moment(watch.get("last_ok"))
+        if last_ok is not None and (utc_now - last_ok).total_seconds() > limit:
+            gaps.append((last_ok, utc_now))
         clipped = sorted(
             (max(a, measured), min(b, finish)) for a, b in gaps if a is not None and b is not None and b > measured and a < finish
         )
         missing = sum((b - a).total_seconds() for a, b in clipped)
         share = max(0.0, 1 - missing / (finish - measured).total_seconds())
-        where = "of the week" if measured == begin else f"since {_when(measured)}, when this report began measuring"
+        where = "of the week" if measured == begin else f"since {_when(measured, tz)}, when this report began measuring"
         lines.append(f"Watching: {_percent(share)} {where}.")
         if clipped:
-            lines.append("Gaps of 10 minutes or more:")
-            lines += [f"- {_span(a, b)}" for a, b in clipped[:GAPS_LISTED]]
+            lines.append("Times it wasn't watching:")
+            lines += [f"- {_span(a, b, tz)}" for a, b in clipped[:GAPS_LISTED]]
             if len(clipped) > GAPS_LISTED:
                 lines.append(f"- and {len(clipped) - GAPS_LISTED} more")
     reads, failed = _total(state, start.isoformat(), end.isoformat(), "reads"), _total(state, start.isoformat(), end.isoformat(), "failed")
@@ -144,18 +148,18 @@ def _percent(share: float) -> str:
     return f"{math.floor(share * 1000) / 10:g}%"
 
 
-def _midnight(day: dt.date, now: dt.datetime) -> dt.datetime:
-    return dt.datetime.combine(day, dt.time(), tzinfo=now.tzinfo)
+def _midnight(day: dt.date, tz: dt.tzinfo | None) -> dt.datetime:
+    return dt.datetime.combine(day, dt.time(), tzinfo=tz).astimezone(dt.timezone.utc)
 
 
-def _moment(text: object, now: dt.datetime) -> dt.datetime | None:
+def _moment(text: object) -> dt.datetime | None:
     if not isinstance(text, str):
         return None
     try:
         moment = dt.datetime.fromisoformat(text)
     except ValueError:
         return None
-    return moment.astimezone(now.tzinfo) if moment.tzinfo is not None else None
+    return moment.astimezone(dt.timezone.utc) if moment.tzinfo is not None else None
 
 
 def _day(day: dt.date) -> str:
@@ -166,11 +170,12 @@ def _clock(moment: dt.datetime) -> str:
     return f"{moment:%I:%M %p}".lstrip("0")
 
 
-def _when(moment: dt.datetime) -> str:
-    return f"{_day(moment.date())}, {_clock(moment)}"
+def _when(moment: dt.datetime, tz: dt.tzinfo | None) -> str:
+    local = moment.astimezone(tz)
+    return f"{_day(local.date())}, {_clock(local)}"
 
 
-def _span(a: dt.datetime, b: dt.datetime) -> str:
-    if a.date() == b.date():
-        return f"{_when(a)} to {_clock(b)}"
-    return f"{_when(a)} to {_when(b)}"
+def _span(a: dt.datetime, b: dt.datetime, tz: dt.tzinfo | None) -> str:
+    if a.astimezone(tz).date() == b.astimezone(tz).date():
+        return f"{_when(a, tz)} to {_clock(b.astimezone(tz))}"
+    return f"{_when(a, tz)} to {_when(b, tz)}"

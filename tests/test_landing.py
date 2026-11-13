@@ -104,3 +104,18 @@ def test_each_check_is_counted_for_the_weekly_report():
     state = expecting(("2026-11-27 PM", 1), ("2026-11-27 PM", 1), ("2026-11-12 AM", 0))
     _check_landings(state, november({"2026-11-27 AM": SlotTags(assigned=2)}), later(LANDING_WAIT_S))
     assert state.daily == {"2026-11-10": {"on_calendar": 1, "not_on_calendar": 2}}
+
+
+def test_on_a_mixed_day_the_please_check_job_is_the_one_named_missing():
+    state = BotState()
+    state.expect_on_calendar(S("2026-11-27 AM"), 0, ACCEPTED, unsure=False)
+    state.expect_on_calendar(S("2026-11-27 PM"), 0, ACCEPTED, unsure=True)
+    checks = _check_landings(state, november({"2026-11-27 AM": SlotTags(assigned=1)}), later(LANDING_WAIT_S))
+    assert [(c.missing, c.unsure) for c in checks] == [(1, True)]
+    assert [(e["slot"], e["outcome"]) for e in state.activity] == [("2026-11-27 PM", "not landed")]
+
+
+def test_every_please_check_job_that_landed_gets_its_own_entry():
+    state = expecting(("2026-11-27 PM", 0), ("2026-11-27 PM", 0), unsure=True)
+    _check_landings(state, november({"2026-11-27 PM": SlotTags(assigned=2)}), later(30))
+    assert [(e["slot"], e["outcome"]) for e in state.activity] == [("2026-11-27 PM", "landed"), ("2026-11-27 PM", "landed")]

@@ -54,7 +54,7 @@ def test_a_full_week_reports_openings_rules_speed_checks_and_watching():
 
 Openings the bot saw: 8
 - Accepted: 3 (Mon Nov 16 AM, Fri Nov 20 PM, Fri Nov 27 PM)
-- Accept clicked but not confirmed ("please check"): 1
+- Accept clicked but not confirmed ("please check"): 1 (1 on the calendar after all)
 - Taken by someone else first: 2
 - Not accepted because of the rules: 2
     too close to another job: 1 (Mon Nov 30 PM)
@@ -65,7 +65,7 @@ Speed: accepted a median of 1.4 s after the bot noticed the opening (fastest 0.6
 Checked on the calendar after Accept: 2 there, 1 not there.
 
 Watching: 98.2% of the week.
-Gaps of 10 minutes or more:
+Times it wasn't watching:
 - Mon Nov 9, 12:00 AM to 12:30 AM
 - Wed Nov 11, 3:10 AM to 3:40 AM
 - Sun Nov 15, 10:00 PM to Mon Nov 16, 12:00 AM
@@ -80,7 +80,7 @@ def test_the_first_week_says_when_measuring_began_and_counts_a_silence_still_goi
 Openings the bot saw: none.
 
 Watching: 95% since Thu Nov 12, 3:10 PM, when this report began measuring.
-Gaps of 10 minutes or more:
+Times it wasn't watching:
 - Sun Nov 15, 8:00 PM to Mon Nov 16, 12:00 AM
 """
 
@@ -104,3 +104,24 @@ def test_the_report_for_a_week_is_due_from_eight_on_the_monday_after():
     assert report_week(MONDAY) == dt.date(2026, 11, 9)
     assert report_week(dt.datetime(2026, 11, 15, 23, 0, tzinfo=NY)) == dt.date(2026, 11, 2)
     assert report_week(dt.datetime(2026, 11, 17, 6, 0, tzinfo=NY)) == dt.date(2026, 11, 9)
+
+
+def test_a_gap_across_the_night_the_clocks_go_back_is_measured_in_real_time():
+    state = BotState(watch={
+        "since": "2026-10-20T00:00:00-04:00",
+        "last_ok": "2026-11-02T07:00:00-05:00",
+        "gaps": [["2026-11-01T01:30:00-04:00", "2026-11-01T01:10:00-05:00"]],
+    })
+    text = weekly_digest(state, dt.date(2026, 10, 26), dt.date(2026, 11, 2), dt.datetime(2026, 11, 2, 8, 0, tzinfo=NY)).text
+    assert "Watching: 99.6% of the week.\nTimes it wasn't watching:\n- Sun Nov 1, 1:30 AM to 1:10 AM\n" in text
+
+
+def test_a_silence_still_going_on_counts_only_beyond_the_bots_own_check_interval():
+    sunday_night = dt.datetime(2026, 11, 15, 23, 59, tzinfo=NY)
+
+    def watching(limit: int) -> str:
+        state = BotState(watch={"since": "2026-11-01T00:00:00-05:00", "last_ok": "2026-11-15T23:44:00-05:00", "gaps": [], "limit": limit})
+        return weekly_digest(state, *WEEK, sunday_night).text
+
+    assert "Watching: 100% of the week." in watching(1200)
+    assert "Watching: 99.8% of the week.\nTimes it wasn't watching:\n- Sun Nov 15, 11:44 PM to 11:59 PM\n" in watching(600)

@@ -250,7 +250,7 @@ async def run_once(
     state.last_run_ok = True
     state.last_error = None
     state.count(today, "reads")
-    state.watched(clock())
+    state.watched(clock(), control.poll_seconds)
     state.prune(today)
     store.save(state)
 
@@ -460,8 +460,9 @@ def _check_landings(state: BotState, reading: MonthReading, now: dt.datetime) ->
         try:
             day = dt.date.fromisoformat(key)
             expect = int(entry["expect"])
-            waited = (now - dt.datetime.fromisoformat(entry["at"])).total_seconds()
+            waited = now.timestamp() - dt.datetime.fromisoformat(entry["at"]).timestamp()
             slots = tuple(Slot.parse(text) for text in entry["slots"])
+            doubtful = _doubtful(entry.get("unsure"), slots)
         except (KeyError, TypeError, ValueError):
             slots = ()
         if not slots:
@@ -476,19 +477,39 @@ def _check_landings(state: BotState, reading: MonthReading, now: dt.datetime) ->
         del state.landing[key]
         state.count(now.date(), "on_calendar", len(slots) - missing)
         state.count(now.date(), "not_on_calendar", missing)
-        check = LandingCheck(day, slots, missing, entry.get("unsure") is True, max(1, round(waited / 60)))
+        check = LandingCheck(day, slots, missing, bool(doubtful), max(1, round(waited / 60)))
+        gone = _likely_missing(slots, doubtful, missing)
+        settled = list(doubtful)
+        for slot in gone:
+            if slot in settled:
+                settled.remove(slot)
         if missing:
             log.warning(
                 "%s: %d of %d accepted job(s) not on the calendar %d min after Accept",
                 check.label(), missing, len(slots), check.minutes,
             )
-            state.add_activity(to_iso(now), str(slots[0]), "not landed", None)
         else:
             log.info("%s: the accepted job(s) are on the calendar", check.label())
-            if check.unsure:
-                state.add_activity(to_iso(now), str(slots[0]), "landed", None)
+        for slot in gone:
+            state.add_activity(to_iso(now), str(slot), "not landed", None)
+        for slot in settled:
+            state.add_activity(to_iso(now), str(slot), "landed", None)
         checks.append(check)
     return checks
+
+
+def _doubtful(raw: object, slots: tuple[Slot, ...]) -> list[Slot]:
+    if isinstance(raw, list):
+        return [Slot.parse(str(text)) for text in raw]
+    return list(slots) if raw is True else []
+
+
+def _likely_missing(slots: tuple[Slot, ...], doubtful: list[Slot], missing: int) -> list[Slot]:
+    rest = list(slots)
+    for slot in doubtful:
+        if slot in rest:
+            rest.remove(slot)
+    return [*doubtful, *rest][:missing]
 
 
 async def _send_landings(notifier: Notifier, checks: list[LandingCheck]) -> None:

@@ -136,8 +136,9 @@ imitation of Elisa (`tests/mock_site/`) in a visible browser:
   openings seen, accepted (dates and AM/PM), taken by someone else first, held back by each
   rule (already booked, the 3-hour spacing, the daily limit, minimum notice, days off),
   how fast the bot accepted, the calendar checks after Accept, and how much of the week it
-  was watching, with every gap of 10 minutes or more in which no calendar read succeeded
-  (switched off, restarting, or Elisa not answering). Email only, never a text. It needs no
+  was watching, listing each stretch with no successful calendar read for 10 minutes, or
+  twice the check interval if that is longer (switched off, restarting, or Elisa not
+  answering). Email only, never a text. It needs no
   extra requests: the bot keeps 15 days of its activity and daily counts in
   `data/state.json` for it. The first report goes out the Monday after a deploy, and its
   watching figure starts from the deploy. `digest` prints the report for the last 7 days

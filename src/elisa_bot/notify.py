@@ -5,6 +5,7 @@ import base64
 import logging
 import smtplib
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -106,13 +107,10 @@ class SmsNotifier:
 
     async def send(self, message: Message) -> bool:
         if not message.sms:
-            return True
+            return False
         body = sms_body(message)
         numbers = self.settings.alert_sms_to
-        sent = 0
-        for number in numbers:
-            if await self._send_to(number, body):
-                sent += 1
+        sent = sum(await asyncio.gather(*(self._send_to(number, body) for number in numbers)))
         if sent:
             log.info("Alert text sent to %d of %d number(s)", sent, len(numbers))
         return sent > 0
@@ -123,10 +121,14 @@ class SmsNotifier:
             try:
                 await asyncio.to_thread(self._post, number, body)
                 return True
+            except urllib.error.HTTPError as exc:
+                log.warning("Alert text refused by Twilio (HTTP %d), attempt %d of %d", exc.code, attempt, attempts)
+                if 400 <= exc.code < 500 and exc.code != 429:
+                    return False
             except OSError as exc:
                 log.warning("Alert text failed (%s), attempt %d of %d", type(exc).__name__, attempt, attempts)
-                if attempt < attempts:
-                    await asyncio.sleep(self.retry_delay_s)
+            if attempt < attempts:
+                await asyncio.sleep(self.retry_delay_s)
         return False
 
     def _post(self, number: str, body: str) -> None:
@@ -151,7 +153,7 @@ class MultiNotifier:
     async def send(self, message: Message) -> bool:
         results = await asyncio.gather(*(n.send(message) for n in self.notifiers), return_exceptions=True)
         delivered = False
-        for notifier, result in zip(self.notifiers, results):
+        for notifier, result in zip(self.notifiers, results, strict=True):
             if isinstance(result, BaseException):
                 log.warning("The %s alert raised %s", notifier.name, type(result).__name__)
             elif result:

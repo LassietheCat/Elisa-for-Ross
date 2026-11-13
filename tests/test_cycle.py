@@ -788,6 +788,7 @@ async def test_each_good_read_is_noted_and_a_long_silence_is_kept_as_a_gap(mock,
             "since": "2026-10-07T10:00:00-04:00",
             "last_ok": "2026-10-07T10:15:00-04:00",
             "gaps": [["2026-10-07T10:00:00-04:00", "2026-10-07T10:15:00-04:00"]],
+            "limit": 600,
         }
     finally:
         await session.close()

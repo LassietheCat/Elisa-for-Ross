@@ -24,7 +24,7 @@ from elisa_bot.site.live import LiveChannel
 from elisa_bot.site.selectors import Selectors
 from elisa_bot.site.session import SignInLimiter, parse_retry_after
 from elisa_bot.state import BotState, ControlStore, StateStore, write_json
-from tests.conftest import FIXED_NOW, fixed_now, make_settings, wo
+from tests.conftest import fixed_now, make_settings, wo
 
 
 class Capture:
@@ -792,3 +792,13 @@ async def test_the_running_bot_sends_the_weekly_report_between_checks(mock, tmp_
     finally:
         stop.set()
         await asyncio.wait_for(task, 30)
+
+
+async def test_no_weekly_report_when_only_texts_are_set_up(tmp_path):
+    settings = dataclasses.replace(
+        Settings(data_dir=tmp_path),
+        twilio_account_sid="AC" + "0" * 32, twilio_auth_token="token", twilio_from="+15550000000", alert_sms_to=("+15551112222",),
+    )
+    digest = service.WeeklyDigest(settings, Capture(), lambda: dt.datetime(2026, 11, 16, 9, 0, tzinfo=NY))
+    digest.tick()
+    assert digest.task is None and not settings.digest_path.exists()

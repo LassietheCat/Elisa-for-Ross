@@ -53,18 +53,24 @@ class BotState:
     def add_activity(self, at: str, slot: str | None, outcome: str, seconds: float | None) -> None:
         self.activity = [*self.activity, {"at": at, "slot": slot, "outcome": outcome, "seconds": seconds}][-ACTIVITY_MAX:]
 
-    def watched(self, now: dt.datetime) -> None:
+    def watched(self, now: dt.datetime, poll_seconds: int = 60) -> None:
         watch = self.watch if isinstance(self.watch, dict) else {}
         raw = watch.get("gaps")
         gaps = [gap for gap in raw if isinstance(gap, list) and len(gap) == 2] if isinstance(raw, list) else []
+        limit = max(WATCH_GAP_S, 2 * poll_seconds)
         last = watch.get("last_ok")
         try:
-            if isinstance(last, str) and (now - dt.datetime.fromisoformat(last)).total_seconds() > WATCH_GAP_S:
+            if isinstance(last, str) and now.timestamp() - dt.datetime.fromisoformat(last).timestamp() > limit:
                 gaps.append([last, to_iso(now)])
         except (TypeError, ValueError):
             pass
         since = watch.get("since")
-        self.watch = {"since": since if isinstance(since, str) else to_iso(now), "last_ok": to_iso(now), "gaps": gaps}
+        self.watch = {
+            "since": since if isinstance(since, str) else to_iso(now),
+            "last_ok": to_iso(now),
+            "gaps": gaps,
+            "limit": limit,
+        }
 
     def seen_slots(self) -> set[Slot]:
         return {Slot.parse(text) for text in self.seen}
@@ -84,11 +90,12 @@ class BotState:
         entry = self.landing.get(slot.date.isoformat())
         if not isinstance(entry, dict) or type(entry.get("expect")) is not int:
             entry = {"expect": jobs_before}
-        slots = entry.get("slots")
+        slots = entry.get("slots") if isinstance(entry.get("slots"), list) else []
+        doubtful = entry.get("unsure") if isinstance(entry.get("unsure"), list) else []
         self.landing[slot.date.isoformat()] = {
             "expect": entry["expect"] + 1,
-            "slots": [*(slots if isinstance(slots, list) else []), str(slot)],
-            "unsure": entry.get("unsure") is True or unsure,
+            "slots": [*slots, str(slot)],
+            "unsure": [*doubtful, str(slot)] if unsure else list(doubtful),
             "at": to_iso(now),
         }
 
@@ -124,8 +131,19 @@ class StateStore:
             return BotState()
         if not isinstance(data, dict):
             return BotState()
-        known = {f.name for f in dataclasses.fields(BotState)}
-        state = BotState(**{key: value for key, value in data.items() if key in known})
+        blank = BotState()
+        values = {}
+        for field_ in dataclasses.fields(BotState):
+            if field_.name not in data:
+                continue
+            value, default = data[field_.name], getattr(blank, field_.name)
+            if isinstance(default, (list, dict)) and not isinstance(value, type(default)):
+                log.warning("%s: ignored %s, which isn't a %s", self.path.name, field_.name, type(default).__name__)
+                continue
+            values[field_.name] = value
+        state = BotState(**values)
+        state.activity = [entry for entry in state.activity if isinstance(entry, dict)]
+        state.daily = {day: counts for day, counts in state.daily.items() if isinstance(counts, dict)}
         state.version = STATE_VERSION
         return state
 
