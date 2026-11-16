@@ -195,9 +195,13 @@ shows:
 - the slots accepted recently (date and AM/PM only);
 - **Days off:** dates or half-days when the bot doesn't accept jobs (a date picker plus
   Whole day / AM only / PM only; AM and PM of one date merge into a whole day; past
-  days drop off by themselves). AM means a start before noon Eastern, PM noon or later,
-  as in the emails. Openings then are only reported, as "day off";
+  days drop off by themselves). AM and PM follow Elisa's own calendar: a start before
+  noon in the court's time zone is AM, so a 9:30 AM job at a California court is AM even
+  though it is 12:30 PM in New York. The emails use the same labels. Openings then are
+  only reported, as "day off";
 - **Jobs per day:** the most jobs a day the bot will fill up to (1–4, default 3);
+- **Minimum notice:** skip openings that start sooner than this after the bot sees them
+  (Off, or 2 to 48 hours). Until it is set on the page, `MIN_NOTICE_MINUTES` applies;
 - **Job types:** the service types the bot accepts: VRI (video), OPI (phone), OSI (on
   site); at least one, all three by default. Orders of other types are ignored;
 - a **Send test alert** button.
@@ -362,12 +366,14 @@ it again.
   follows shows the new job on her calendar.
 - **Missed openings are reported:** if a calendar tag or Elisa's open-order list can't
   be read, one "the bot may be missing openings" email goes out.
-- **Minimum notice** (`MIN_NOTICE_MINUTES`, 0 = off): openings that start sooner than
-  this are not accepted and are emailed as "too soon (minimum notice N hours)". Without
+- **Minimum notice** (set on the page; before that `MIN_NOTICE_MINUTES`, 0 = off):
+  openings that start sooner than this are not accepted and are emailed as "too soon
+  (minimum notice N hours)". Without
   a start time, the half-day's earliest possible start counts (midnight for AM, noon
   for PM).
 - **Page changes are logged** by the page service: `journalctl -u elisa-control | grep "Page:"`
-  shows days off added or removed, the switch, the interval, jobs per day and job types.
+  shows days off added or removed, the switch, the interval, jobs per day, minimum notice
+  and job types.
 - **Only the chosen job types:** an open order counts only if its service type
   (`sertype` in Elisa's list) is ticked under **Job types** on the page, in both the
   quick check and the calendar reads; an order without a type doesn't count. Before
@@ -383,7 +389,8 @@ it again.
   has fewer jobs that day (Applied, Assigned or Confirmed, plus the bot's accepts in
   this check) than **Jobs per day** on the page (1–4, default 3), and its start time
   is at least `JOB_GAP_MINUTES` (180) from the start of every other job she has that
-  day, in Eastern time. Opening times come from the open-order list the page loads;
+  day, comparing real moments across time zones (a 9:30 AM Pacific start counts as
+  12:30 PM Eastern). Opening times come from the open-order list the page loads;
   her job times from Elisa's job-details request (the one the page makes when a job
   is clicked), made only when a new opening falls on a day she already has jobs.
   Times are used in memory only: the state file, the log and emails hold date and

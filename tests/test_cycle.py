@@ -792,3 +792,67 @@ async def test_each_good_read_is_noted_and_a_long_silence_is_kept_as_a_gap(mock,
         }
     finally:
         await session.close()
+
+
+async def test_a_west_coast_morning_opening_is_accepted_and_named_by_elisas_half_day(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.set_work_orders([wo("2026-11-27", "AM", "available", "09:30", zone="America/Los_Angeles")])
+    report = await run(settings, capture, month=(2026, 11))
+    assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-11-27 AM", ApplyOutcome.APPLIED)]
+    assert capture.messages[-1].subject == "Elisa: applied Fri Nov 27 AM"
+
+
+async def test_straight_from_the_list_a_west_coast_morning_order_is_named_am(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await learned_accept(mock, settings, capture)
+    try:
+        mock.set_work_orders([
+            wo("2026-10-20", "AM", "assigned", "09:00"),
+            wo("2026-10-15", "AM", "available", "09:30", zone="America/Los_Angeles"),
+        ])
+        report = await quick_check_then_read(settings, capture, session)
+        assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-10-15 AM", ApplyOutcome.APPLIED)]
+        assert capture.messages[-1].subject == "Elisa: applied Thu Oct 15 AM"
+    finally:
+        await session.close()
+
+
+async def test_an_opening_skipped_by_a_rule_is_not_called_gone_when_the_quick_check_catches_up(mock, tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    session = await signed_in(settings)
+    try:
+        await run(settings, capture, session)
+        ControlStore(settings).update(by="test", now=fixed_now(), add_day_off=S("2026-10-20 AM"))
+        mock.set_work_orders([wo("2026-10-20", "AM", "available", "09:00")])
+        await run(settings, capture, session, month=(2026, 10))
+        report = await quick_check_then_read(settings, capture, session)
+        assert report.results == [] and "was gone" not in caplog.text
+        assert [e["outcome"] for e in StateStore(settings.state_path).load().activity] == ["day off"]
+    finally:
+        await session.close()
+
+
+async def test_a_west_coast_order_is_still_found_if_the_panel_shows_eastern_time(mock, tmp_path):
+    mock.configure(clock_shown="viewer")
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    mock.set_work_orders([wo("2026-11-27", "AM", "available", "09:30", zone="America/Los_Angeles")])
+    report = await run(settings, capture, month=(2026, 11))
+    assert [(str(r.slot), r.outcome) for r in report.results] == [("2026-11-27 AM", ApplyOutcome.APPLIED)]
+
+
+async def test_the_pages_minimum_notice_holds_back_an_opening_that_starts_too_soon(mock, tmp_path):
+    settings = make_settings(tmp_path, mock.base_url, test_mode=False)
+    capture = Capture()
+    await run(settings, capture)
+    ControlStore(settings).update(by="test", now=fixed_now(), min_notice_minutes=240)
+    mock.set_work_orders([wo("2026-10-07", "PM", "available", "13:00")])
+    report = await run(settings, capture, month=(2026, 10))
+    assert report.results == [] and report.skipped_too_soon == [S("2026-10-07 PM")]
+    assert "minimum notice 4 hours" in capture.messages[-1].text

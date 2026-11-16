@@ -41,22 +41,22 @@ def parse_event(frame: object) -> tuple[str, list] | None:
     return packet[0], packet[1:]
 
 
-def event_slot(args: list, tz: ZoneInfo) -> tuple[dt.date | None, Half | None]:
+def event_slot(args: list) -> tuple[dt.date | None, Half | None]:
     data = args[0] if args and isinstance(args[0], dict) else {}
     day = _utc_day(data.get("deldate"))
     if day is None:
         return None, None
-    moment = start_time(data, tz)
+    moment = start_time(data)
     if moment is None:
         return day, None
     return moment.date(), Half.AM if moment.hour < 12 else Half.PM
 
 
-def start_time(data: dict, tz: ZoneInfo) -> dt.datetime | None:
+def start_time(data: dict) -> dt.datetime | None:
     day = _utc_day(data.get("deldate"))
     if day is None:
         return None
-    return _viewer_time(day, data.get("sched"), data.get("courtTimezone"), tz)
+    return _court_time(day, data.get("sched"), data.get("courtTimezone"))
 
 
 def _utc_day(value: object) -> dt.date | None:
@@ -73,7 +73,7 @@ def _utc_day(value: object) -> dt.date | None:
     return moment.date()
 
 
-def _viewer_time(day: dt.date, sched: object, court_tz: object, tz: ZoneInfo) -> dt.datetime | None:
+def _court_time(day: dt.date, sched: object, court_tz: object) -> dt.datetime | None:
     if not isinstance(sched, str) or not isinstance(court_tz, str):
         return None
     match = _CLOCK_RE.match(sched)
@@ -84,7 +84,7 @@ def _viewer_time(day: dt.date, sched: object, court_tz: object, tz: ZoneInfo) ->
         zone = ZoneInfo(court_tz)
     except (ValueError, KeyError):
         return None
-    return dt.datetime.combine(day, clock, tzinfo=zone).astimezone(tz)
+    return dt.datetime.combine(day, clock, tzinfo=zone)
 
 
 def _label(day: dt.date | None, half: Half | None) -> str:
@@ -96,8 +96,7 @@ def _label(day: dt.date | None, half: Half | None) -> str:
 
 
 class LiveChannel:
-    def __init__(self, tz: ZoneInfo, timer: Callable[[], float] = time.monotonic):
-        self.tz = tz
+    def __init__(self, timer: Callable[[], float] = time.monotonic):
         self.timer = timer
         self.counts: dict[str, int] = {}
         self.order_rooms = 0
@@ -135,7 +134,7 @@ class LiveChannel:
             if first:
                 log.info("Live channel: first '%s' event", name)
             return
-        day, half = event_slot(args, self.tz)
+        day, half = event_slot(args)
         when = _label(day, half)
         if name == ASSIGNED_EVENT:
             log.info("Live channel: a work order for %s was assigned; %s", when, self._seen_text(day, half, now))

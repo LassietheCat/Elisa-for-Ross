@@ -5,6 +5,7 @@ import datetime as dt
 import json
 import secrets
 import threading
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -49,6 +50,7 @@ DEFAULT_CONFIG = {
     "list_no_data_times": 0,
     "accept_delay_ms": 0,
     "refusal_http_status": 200,
+    "clock_shown": "court",
 }
 
 
@@ -85,6 +87,7 @@ class MockState:
                 {"id": str(index), "date": item["date"], "half": item["half"], "status": item["status"],
                  "time": item.get("time") or ("09:00" if item["half"] == "AM" else "14:00"),
                  "court": item.get("court") or "MOCK1",
+                 "zone": item.get("zone") or "America/New_York",
                  "sertype": item.get("sertype") or "VRI"}
                 for index, item in enumerate(items, start=1)
             ]
@@ -93,15 +96,19 @@ class MockState:
 LISTED = ("available", "assigned_listed")
 
 
-def clock_text(time: str) -> str:
+def clock_text(wo: dict, shown: str = "court") -> str:
     try:
-        return dt.datetime.strptime(time, "%H:%M").strftime("%I:%M %p") + " EDT"
-    except ValueError:
+        clock = dt.datetime.strptime(wo["time"], "%H:%M").time()
+        moment = dt.datetime.combine(dt.date.fromisoformat(wo["date"]), clock, tzinfo=ZoneInfo(wo["zone"]))
+    except (KeyError, TypeError, ValueError):
         return "time to be confirmed"
+    if shown == "viewer":
+        moment = moment.astimezone(ZoneInfo("America/New_York"))
+    return f"{moment:%I:%M %p %Z}"
 
 
 def order_item(wo: dict) -> dict:
-    return {"deldate": f"{wo['date']}T00:00:00.000Z", "sched": wo["time"], "courtTimezone": "America/New_York",
+    return {"deldate": f"{wo['date']}T00:00:00.000Z", "sched": wo["time"], "courtTimezone": wo["zone"],
             "performOpenWO": [], "status": "Assigned" if wo["status"] == "assigned_listed" else "",
             "sertype": wo["sertype"], "coi": wo["id"], "replocid": "MOCK1"}
 
@@ -311,7 +318,7 @@ def create_app(state: MockState) -> FastAPI:
             "work_orders": [
                 {"id": wo["id"], "number": f"WO {9990000 + int(wo['id'])}", "court": "CONFIDENTIAL-COURT",
                  "language": "CONFIDENTIAL-LANG", "judge": "CONFIDENTIAL-JUDGE",
-                 "time": clock_text(wo["time"]), "sertype": wo["sertype"]}
+                 "time": clock_text(wo, state.config["clock_shown"]), "sertype": wo["sertype"]}
                 for wo in open_now
             ],
             "button_label": label,

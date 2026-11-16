@@ -127,7 +127,7 @@ class SiteSession:
         self._accept_api = re.compile(selectors.accept_api_re)
         self._listed: dict[dt.datetime, list[tuple[object, object]]] = {}
         self.tz = ZoneInfo(settings.timezone)
-        self.live = LiveChannel(self.tz)
+        self.live = LiveChannel()
         self.open_times: dict[Slot, set[str]] = {}
         self.service_types: frozenset[str] | None = None
         self.clicked: set[tuple[Slot, str | None]] = set()
@@ -231,7 +231,7 @@ class SiteSession:
         for item in items:
             if not isinstance(item, dict) or _taken(item) or not self._wanted(item):
                 continue
-            moment = start_time(item, self.tz)
+            moment = start_time(item)
             if moment is not None:
                 times.append(moment)
                 continue
@@ -294,7 +294,7 @@ class SiteSession:
             return None
         times = []
         for item in result:
-            moment = start_time(item, self.tz) if isinstance(item, dict) else None
+            moment = start_time(item) if isinstance(item, dict) else None
             if moment is None:
                 return None
             if moment.date() == day:
@@ -377,7 +377,7 @@ class SiteSession:
         for item in items:
             if not isinstance(item, dict) or _taken(item) or not self._wanted(item):
                 continue
-            moment = start_time(item, self.tz)
+            moment = start_time(item)
             starts.append(moment)
             if moment is not None and item.get("coi") is not None and item.get("replocid") is not None:
                 listed.setdefault(moment, []).append((item["coi"], item["replocid"]))

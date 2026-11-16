@@ -224,3 +224,45 @@ def test_minimum_notice_uses_the_half_days_earliest_start_without_a_time():
     assert plan.skipped_too_soon == [S("2026-10-08 AM"), S("2026-10-08 PM")]
     plan = plan_month(slots, state, today=TODAY, settings=Settings(min_notice_minutes=240), now=late)
     assert plan.skipped_too_soon == [S("2026-10-08 AM")] and slots_of(plan.to_apply) == [S("2026-10-08 PM")]
+
+
+PACIFIC = ZoneInfo("America/Los_Angeles")
+
+
+def test_a_west_coast_morning_order_matches_the_am_badge_elisa_shows():
+    start = dt.datetime(2026, 11, 27, 9, 30, tzinfo=PACIFIC)
+    openings = openings_in({S("2026-11-27 AM"): open_()}, [start])
+    assert slots_of(openings) == [S("2026-11-27 AM")] and openings[0].start == start
+
+
+def test_the_three_hour_rule_compares_real_moments_across_time_zones():
+    slots = {S("2026-11-27 AM"): SlotTags(available=1, assigned=1)}
+    openings = openings_in(slots, [dt.datetime(2026, 11, 27, 9, 30, tzinfo=PACIFIC)])
+
+    def plan(her_job: str):
+        return plan_month(
+            slots, BotState(baseline_done=True), today=TODAY, settings=Settings(), openings=openings,
+            job_times={dt.date(2026, 11, 27): [at(her_job)]},
+        )
+
+    assert [o.slot for o in plan("2026-11-27T09:00").to_apply] == [S("2026-11-27 AM")]
+    assert plan("2026-11-27T11:00").skipped_too_close == [S("2026-11-27 AM")]
+
+
+def test_openings_in_one_half_day_are_tried_in_order_of_their_real_start():
+    eastern, pacific = at("2026-11-27T11:00"), dt.datetime(2026, 11, 27, 9, 30, tzinfo=PACIFIC)
+    assert [o.start for o in openings_in({S("2026-11-27 AM"): open_(2)}, [pacific, eastern])] == [eastern, pacific]
+
+
+def test_the_pages_minimum_notice_beats_the_server_setting():
+    slots = {S("2026-10-07 PM"): open_()}
+    openings = openings_in(slots, [at("2026-10-07T13:00")])
+
+    def plan(minutes: int | None):
+        return plan_month(
+            slots, BotState(baseline_done=True), today=TODAY, settings=Settings(min_notice_minutes=0),
+            now=at("2026-10-07T10:00"), openings=openings, min_notice_minutes=minutes,
+        )
+
+    assert plan(None).to_apply and plan(120).to_apply
+    assert plan(240).skipped_too_soon == [S("2026-10-07 PM")]

@@ -3,12 +3,12 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+
 from zoneinfo import ZoneInfo
 
-from elisa_bot.models import Half, Slot
-from elisa_bot.site.live import LiveChannel, event_slot, parse_event
+from elisa_bot.models import Half, Opening, Slot
+from elisa_bot.site.live import LiveChannel, event_slot, parse_event, start_time
 
-NEW_YORK = ZoneInfo("America/New_York")
 
 
 def order(day: str, sched: str = "14:00", zone: str = "America/New_York") -> dict:
@@ -26,19 +26,20 @@ def test_socket_io_event_frames_are_read_and_everything_else_is_ignored():
         assert parse_event(text) is None
 
 
-def test_an_event_is_placed_on_the_viewers_clock_like_the_calendar():
-    assert event_slot([order("2026-10-21", "08:30", "America/Los_Angeles")], NEW_YORK) == (dt.date(2026, 10, 21), Half.AM)
-    assert event_slot([order("2026-10-21", "10:00:00", "America/Los_Angeles")], NEW_YORK) == (dt.date(2026, 10, 21), Half.PM)
-    assert event_slot([{"deldate": "2026-10-21"}], NEW_YORK) == (dt.date(2026, 10, 21), None)
-    assert event_slot([order("2026-10-21", "9:15", "Not/AZone")], NEW_YORK) == (dt.date(2026, 10, 21), None)
-    assert event_slot([], NEW_YORK) == (None, None)
-    assert event_slot(["text"], NEW_YORK) == (None, None)
+def test_an_event_is_placed_on_the_courts_clock_like_the_calendar():
+    assert event_slot([order("2026-10-21", "08:30", "America/Los_Angeles")]) == (dt.date(2026, 10, 21), Half.AM)
+    assert event_slot([order("2026-10-21", "10:00:00", "America/Los_Angeles")]) == (dt.date(2026, 10, 21), Half.AM)
+    assert event_slot([order("2026-10-21", "13:00", "America/Los_Angeles")]) == (dt.date(2026, 10, 21), Half.PM)
+    assert event_slot([{"deldate": "2026-10-21"}]) == (dt.date(2026, 10, 21), None)
+    assert event_slot([order("2026-10-21", "9:15", "Not/AZone")]) == (dt.date(2026, 10, 21), None)
+    assert event_slot([]) == (None, None)
+    assert event_slot(["text"]) == (None, None)
 
 
 def test_new_events_trigger_one_read_at_a_time_and_assigned_orders_are_only_logged(caplog):
     caplog.set_level(logging.INFO)
     now = [0.0]
-    live = LiveChannel(NEW_YORK, timer=lambda: now[0])
+    live = LiveChannel(timer=lambda: now[0])
     live.sent('42["subscribe","OPEN_WO_ABC"]')
     live.sent('42["subscribe","PG_CONNECTION"]')
     live.received('42["pg_status_update",{}]')
@@ -67,7 +68,7 @@ def test_new_events_trigger_one_read_at_a_time_and_assigned_orders_are_only_logg
 
 def test_a_flood_of_one_event_stops_triggering_reads_until_it_calms_down(caplog):
     now = [0.0]
-    live = LiveChannel(NEW_YORK, timer=lambda: now[0])
+    live = LiveChannel(timer=lambda: now[0])
     fired = 0
     for i in range(35):
         now[0] = i * 11.0
@@ -78,3 +79,13 @@ def test_a_flood_of_one_event_stops_triggering_reads_until_it_calms_down(caplog)
     now[0] = 3700.0
     live.received('42["noisy",{}]')
     assert live.take_trigger()[0] is True
+
+
+def test_an_order_keeps_its_courts_clock_so_its_half_day_and_date_match_elisas_calendar():
+    pacific = start_time(order("2026-11-27", "09:30", "America/Los_Angeles"))
+    assert pacific == dt.datetime(2026, 11, 27, 9, 30, tzinfo=ZoneInfo("America/Los_Angeles"))
+    assert Opening.at(pacific).slot == Slot.parse("2026-11-27 AM")
+    assert Opening.at(pacific).clocks(ZoneInfo("America/New_York")) == frozenset({"09:30 AM", "12:30 PM"})
+    guam = start_time(order("2026-11-26", "09:00", "Pacific/Guam"))
+    assert Opening.at(guam).slot == Slot.parse("2026-11-26 AM")
+    assert guam.astimezone(ZoneInfo("America/New_York")).date() == dt.date(2026, 11, 25)

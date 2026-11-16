@@ -51,6 +51,14 @@ class Opening:
     def clock(self) -> str | None:
         return None if self.start is None else f"{self.start:%I:%M %p}"
 
+    def clocks(self, viewer: dt.tzinfo | None = None) -> frozenset[str] | None:
+        if self.start is None:
+            return None
+        shown = {f"{self.start:%I:%M %p}"}
+        if viewer is not None:
+            shown.add(f"{self.start.astimezone(viewer):%I:%M %p}")
+        return frozenset(shown)
+
     @classmethod
     def at(cls, start: dt.datetime) -> Opening:
         return cls(Slot(start.date(), Half.AM if start.hour < 12 else Half.PM), start)

@@ -123,7 +123,9 @@ async def run_once(
         session.service_types = control.wanted_types()
         report.signed_in = await session.ensure_ready()
         reader = CalendarReader(session.page, selectors)
-        applier = Applier(session.page, selectors, reader, test_mode=settings.test_mode, service_types=session.service_types)
+        applier = Applier(
+            session.page, selectors, reader, test_mode=settings.test_mode, service_types=session.service_types, tz=session.tz
+        )
         if fresh and not settings.test_mode:
             await _accept_fresh(
                 session, applier, state, settings, control, fresh, report,
@@ -173,6 +175,7 @@ async def run_once(
                 max_jobs=control.max_jobs_per_day,
                 baseline=baseline,
                 days_off=days_off,
+                min_notice_minutes=control.notice_minutes(settings.min_notice_minutes),
             )
             session.remember_open_times(reading.slots, openings, listed=orders is not None)
             report.badges |= {slot for slot, tags in reading.slots.items() if tags.available > 0}
@@ -235,7 +238,8 @@ async def run_once(
     state.baseline_done = not state.baseline_pending
     if read_keys:
         state.watched_through = max(read_keys | {state.watched_through or ""})
-    if detected_at is not None and not report.new:
+    still_open = report.badges & {Opening.at(start).slot for start in fresh} if fresh else report.badges
+    if detected_at is not None and not report.new and not still_open:
         seconds = _since(detected_at)
         state.add_activity(to_iso(clock()), None, "gone", seconds)
         log.info("The new opening was gone %s s after the quick check saw it (taken before the bot could read it)", seconds)
@@ -264,6 +268,7 @@ async def run_once(
         report.skipped_day_full,
         control.max_jobs_per_day,
         report.skipped_too_soon,
+        control.notice_minutes(settings.min_notice_minutes),
     )
     await _send_landings(notifier, report.landings)
     return report
@@ -321,6 +326,7 @@ async def _accept_fresh(
             max_jobs=control.max_jobs_per_day,
             baseline=False,
             days_off=days_off,
+            min_notice_minutes=control.notice_minutes(settings.min_notice_minutes),
         )
         for opening in plan.to_apply:
             result = await _accept_listed(session, applier, opening)
@@ -569,6 +575,7 @@ async def _notify(
     day_full: list[Slot] = (),
     max_jobs: int = 3,
     too_soon: list[Slot] = (),
+    notice_minutes: int = 0,
 ) -> bool:
     message = cycle_message(
         results,
@@ -580,7 +587,7 @@ async def _notify(
         too_soon=too_soon if settings.notify_skipped else (),
         gap_hours=settings.job_gap_minutes / 60,
         max_jobs=max_jobs,
-        notice_hours=settings.min_notice_minutes / 60,
+        notice_hours=notice_minutes / 60,
     )
     if message is None:
         return False

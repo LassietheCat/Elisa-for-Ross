@@ -370,3 +370,23 @@ def test_the_calendar_check_shows_in_recent_activity_and_a_settled_job_counts_as
     assert "Thu Oct 15 PM: on the calendar after all" in page
     assert "Fri Oct 16 AM: accepted, but not on the calendar; check Elisa" in page
     assert '<div class="n">3</div><div class="l">accepted today</div>' in page
+
+
+def test_minimum_notice_is_chosen_on_the_page(tmp_path):
+    settings, client, _ = make(tmp_path)
+    sign_in(client)
+    page = client.get("/").text
+    assert "Minimum notice" in page and '<option value="0" selected>Off</option>' in page
+    client.post("/min-notice", data={"min_notice_minutes": "240", "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().min_notice_minutes == 240
+    assert '<option value="240" selected>4 hours</option>' in client.get("/").text
+    for nonsense in ("99999", "-5", "soon"):
+        client.post("/min-notice", data={"min_notice_minutes": nonsense, "csrf": csrf_of(client)})
+    assert ControlStore(settings).load().min_notice_minutes == 240
+    assert client.post("/min-notice", data={"min_notice_minutes": "0", "csrf": "wrong"}).status_code == 403
+
+
+def test_an_unusual_server_notice_is_shown_as_it_is_rather_than_as_off(tmp_path):
+    _, client, _ = make(tmp_path, min_notice_minutes=90)
+    sign_in(client)
+    assert '<option value="90" selected>1.5 hours</option>' in client.get("/").text

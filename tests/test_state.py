@@ -5,8 +5,9 @@ import json
 import stat
 from zoneinfo import ZoneInfo
 
+from elisa_bot.config import Settings
 from elisa_bot.models import Slot
-from elisa_bot.state import BotState, StateStore
+from elisa_bot.state import BotState, ControlStore, StateStore
 
 
 def test_missing_file_gives_a_fresh_state(tmp_path):
@@ -194,3 +195,17 @@ def test_a_state_file_with_the_wrong_kinds_of_values_loads_safely_and_still_prun
     assert "ignored landing, which isn't a dict" in caplog.text
     state.prune(dt.date(2026, 10, 20))
     assert len(state.activity) == 1
+
+
+def test_minimum_notice_set_on_the_page_beats_the_server_setting_and_nonsense_is_ignored(tmp_path):
+    settings = Settings(data_dir=tmp_path)
+    store = ControlStore(settings)
+    now = dt.datetime(2026, 11, 14, 12, 0, tzinfo=ZoneInfo("America/New_York"))
+    assert store.load().notice_minutes(90) == 90
+    assert store.update(by="test", now=now, min_notice_minutes=240).notice_minutes(90) == 240
+    assert store.load().notice_minutes(90) == 240
+    assert store.update(by="test", now=now, min_notice_minutes=0).notice_minutes(90) == 0
+    store.update(by="test", now=now, min_notice_minutes=99999)
+    assert store.load().min_notice_minutes == 0
+    settings.control_path.write_text('{"min_notice_minutes": "4 hours"}')
+    assert store.load().min_notice_minutes is None

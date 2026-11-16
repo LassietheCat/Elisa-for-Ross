@@ -22,6 +22,7 @@ HISTORY_DAYS = 15
 WATCH_GAP_S = 600
 MAX_DAYS_OFF = 366
 MAX_JOBS_PER_DAY = 4
+MAX_NOTICE_MINUTES = 2880
 SERVICE_TYPES = ("VRI", "OPI", "OSI")
 
 
@@ -160,6 +161,10 @@ class ControlState:
     days_off: list[str] = field(default_factory=list)
     max_jobs_per_day: int = 3
     service_types: list[str] = field(default_factory=lambda: list(SERVICE_TYPES))
+    min_notice_minutes: int | None = None
+
+    def notice_minutes(self, default: int) -> int:
+        return default if self.min_notice_minutes is None else self.min_notice_minutes
 
     def days_off_slots(self) -> frozenset[Slot]:
         return frozenset(_off_slots(self.days_off))
@@ -208,6 +213,10 @@ def _service_types(value: object) -> list[str]:
     return [code for code in SERVICE_TYPES if code in chosen] or list(SERVICE_TYPES)
 
 
+def _notice(value: object) -> int | None:
+    return value if type(value) is int and 0 <= value <= MAX_NOTICE_MINUTES else None
+
+
 def _jobs_per_day(value: object) -> int:
     if type(value) is not int:
         return ControlState.max_jobs_per_day
@@ -239,6 +248,7 @@ class ControlStore:
             days_off=_valid_days(data.get("days_off")),
             max_jobs_per_day=_jobs_per_day(data.get("max_jobs_per_day")),
             service_types=_service_types(data.get("service_types")),
+            min_notice_minutes=_notice(data.get("min_notice_minutes")),
         )
 
     def update(
@@ -252,6 +262,7 @@ class ControlStore:
         remove_day_off: dt.date | Slot | None = None,
         max_jobs_per_day: int | None = None,
         service_types: list[str] | None = None,
+        min_notice_minutes: int | None = None,
     ) -> ControlState:
         control = self.load()
         if enabled is not None:
@@ -268,6 +279,8 @@ class ControlStore:
             control.max_jobs_per_day = _jobs_per_day(max_jobs_per_day)
         if service_types is not None:
             control.service_types = _service_types(service_types)
+        if _notice(min_notice_minutes) is not None:
+            control.min_notice_minutes = min_notice_minutes
         control.updated_at = to_iso(now)
         control.updated_by = by
         write_json(self.path, asdict(control))

@@ -20,7 +20,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 from .config import Settings
 from .models import Half, Slot
 from .notify import Notifier, build_notifier, test_message
-from .state import MAX_JOBS_PER_DAY, SERVICE_TYPES, BotState, ControlState, ControlStore, StateStore, off_entries
+from .state import BotState, ControlState, ControlStore, MAX_JOBS_PER_DAY, MAX_NOTICE_MINUTES, SERVICE_TYPES, StateStore, off_entries
 from .timeutil import now_in
 
 log = logging.getLogger(__name__)
@@ -30,6 +30,7 @@ SESSION_SECONDS = 30 * 24 * 3600
 LOGIN_LIMIT = 5
 LOGIN_WINDOW_S = 15 * 60
 INTERVAL_CHOICES = (15, 20, 30, 60, 120, 300, 600)
+NOTICE_CHOICES = (0, 120, 240, 480, 720, 1440, 2880)
 ACTIVITY_SHOWN = 10
 STATIC = Path(__file__).parent / "static"
 ICON_SIZES = (180, 192, 512)
@@ -432,6 +433,13 @@ def _stats_row(settings: Settings, state: BotState, now: dt.datetime) -> str:
     )
 
 
+def _notice_label(minutes: int) -> str:
+    if minutes == 0:
+        return "Off"
+    hours = minutes / 60
+    return f"{hours:g} hour{'' if hours == 1 else 's'}"
+
+
 def _settings_panel(settings: Settings, control: ControlState, now: dt.datetime, token: str) -> str:
     sections = []
 
@@ -477,6 +485,22 @@ def _settings_panel(settings: Settings, control: ControlState, now: dt.datetime,
         f'<div class="numpick">{num_opts}</div>'
         '<div class="frow"><button class="btn b-save" type="submit">Save</button></div>'
         '</form></div></details>'
+    )
+
+    notice = control.notice_minutes(settings.min_notice_minutes)
+    notice_opts = "".join(
+        f'<option value="{minutes}"{" selected" if minutes == notice else ""}>{_notice_label(minutes)}</option>'
+        for minutes in sorted({*NOTICE_CHOICES, notice})
+    )
+    sections.append(
+        '<details><summary><span>Minimum notice</span><span class="chev">&#9660;</span></summary>'
+        '<div class="dbody">'
+        '<p class="ddesc">Skip openings that start sooner than this after the bot sees them.</p>'
+        f'<form method="post" action="/min-notice">{token}'
+        '<div class="frow">'
+        f'<div class="selw"><select name="min_notice_minutes">{notice_opts}</select></div>'
+        '<button class="btn b-save" type="submit">Save</button>'
+        '</div></form></div></details>'
     )
 
     type_opts = "".join(
@@ -687,6 +711,21 @@ def create_control_app(
             return RedirectResponse("/", status_code=303)
         control = controls.update(by="web", now=clock(), max_jobs_per_day=count)
         log.info("Page: jobs per day set to %d", control.max_jobs_per_day)
+        return RedirectResponse("/?msg=saved", status_code=303)
+
+    @app.post("/min-notice")
+    async def min_notice(request: Request):
+        data, problem = await checked_form(request)
+        if problem is not None:
+            return problem
+        try:
+            minutes = int(data.get("min_notice_minutes", ""))
+        except ValueError:
+            return RedirectResponse("/", status_code=303)
+        if not 0 <= minutes <= MAX_NOTICE_MINUTES:
+            return RedirectResponse("/", status_code=303)
+        control = controls.update(by="web", now=clock(), min_notice_minutes=minutes)
+        log.info("Page: minimum notice set to %s", _notice_label(control.notice_minutes(settings.min_notice_minutes)))
         return RedirectResponse("/?msg=saved", status_code=303)
 
     @app.post("/job-types")

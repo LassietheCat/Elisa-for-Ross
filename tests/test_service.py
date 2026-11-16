@@ -133,7 +133,7 @@ async def test_no_working_again_email_without_a_failure_alert():
 class BrokenBrowserSession:
     def __init__(self, *args, **kwargs) -> None:
         self.started = False
-        self.live = LiveChannel(ZoneInfo("America/New_York"))
+        self.live = LiveChannel()
 
     async def start(self) -> None:
         raise PlaywrightError("Executable doesn't exist")

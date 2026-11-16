@@ -68,6 +68,7 @@ def plan_month(
     already_planned: int = 0,
     baseline: bool | None = None,
     days_off: AbstractSet[Slot] = frozenset(),
+    min_notice_minutes: int | None = None,
 ) -> Plan:
     openings = openings_in(slots, None) if openings is None else openings
     candidates = new_openings(openings, state, known or {})
@@ -86,7 +87,7 @@ def plan_month(
     times_known = job_times or {}
     applied = state.applied_slots()
     gap = dt.timedelta(minutes=settings.job_gap_minutes)
-    notice = dt.timedelta(minutes=settings.min_notice_minutes)
+    notice = dt.timedelta(minutes=settings.min_notice_minutes if min_notice_minutes is None else min_notice_minutes)
     cap = settings.max_applies_per_day
     budget = None if cap == 0 else max(0, cap - state.applies_on(today) - already_planned)
     chosen: dict[dt.date, list[Opening]] = {}
@@ -137,5 +138,4 @@ def _earliest_start(opening: Opening, now: dt.datetime) -> dt.datetime:
 
 
 def _order(opening: Opening) -> tuple:
-    minutes = -1 if opening.start is None else opening.start.hour * 60 + opening.start.minute
-    return opening.slot, minutes
+    return opening.slot, -1.0 if opening.start is None else opening.start.timestamp()

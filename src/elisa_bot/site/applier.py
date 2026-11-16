@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 import hashlib
 import logging
 import re
@@ -56,8 +57,10 @@ class Applier:
         *,
         test_mode: bool,
         service_types: frozenset[str] | None = None,
+        tz: dt.tzinfo | None = None,
     ):
         self.page = page
+        self.tz = tz
         self.sel = selectors
         self.reader = reader
         self.test_mode = test_mode
@@ -85,7 +88,7 @@ class Applier:
                 tag = tags[index]
                 await tag.evaluate("el => el.scrollIntoView({block: 'center'})")
                 await tag.click()
-                buttons, window = await self._wait_for_accepts(opening.clock)
+                buttons, window = await self._wait_for_accepts(opening.clocks(self.tz))
             except SiteError as exc:
                 return ApplyResult(slot, ApplyOutcome.ERROR, exc.code)
             except PlaywrightError as exc:
@@ -209,7 +212,7 @@ class Applier:
         return ApplyResult(slot, ApplyOutcome.UNVERIFIED, "site_reported_problem", clicked=True)
 
     async def _wait_for_accepts(
-        self, clock: str | None, timeout_s: float = 8.0, settle_s: float = 1.5
+        self, clocks: frozenset[str] | None, timeout_s: float = 8.0, settle_s: float = 1.5
     ) -> tuple[list[Locator], Locator | None]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s
@@ -224,7 +227,7 @@ class Applier:
                     continue
                 visible += 1
                 row = await button.evaluate(_ROW_JS, self.sel.order_row)
-                if (clock is None or row["clock"] == clock) and self._wanted(row["types"]):
+                if (clocks is None or row["clock"] in clocks) and self._wanted(row["types"]):
                     matching.append(button)
             if matching:
                 return matching, None
