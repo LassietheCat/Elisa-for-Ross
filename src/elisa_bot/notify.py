@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import base64
+import http.client
+import json
 import logging
+import re
 import smtplib
 import ssl
 import urllib.error
@@ -14,12 +16,17 @@ from email.utils import formataddr
 from typing import Iterable, Protocol
 
 from .config import Settings
+from .logging_setup import REDACTED
 from .models import ApplyOutcome, ApplyResult, LandingCheck, Slot
+from .state import write_json
+from .timeutil import now_in, to_iso
 
 log = logging.getLogger(__name__)
 
-TWILIO_API = "https://api.twilio.com/2010-04-01"
-SMS_MAX_CHARS = 320
+TEXTBELT_URL = "https://textbelt.com"
+TOP_UP_URL = "https://textbelt.com/purchase/"
+SMS_SENDER = "Elisa bot"
+SMS_MAX_BYTES = 256
 
 
 @dataclass(frozen=True)
@@ -91,17 +98,57 @@ class EmailNotifier:
 
 
 def sms_body(message: Message) -> str:
-    body = f"Elisa bot: {message.text}"
-    if len(body) <= SMS_MAX_CHARS:
+    body = f"{SMS_SENDER} - {message.subject.removeprefix('Elisa: ')}"
+    if len(body.encode()) <= SMS_MAX_BYTES:
         return body
-    return body[: SMS_MAX_CHARS - 3].rstrip() + "..."
+    return body.encode()[: SMS_MAX_BYTES - 3].decode("utf-8", "ignore").rstrip() + "..."
+
+
+class TextBalance:
+    def __init__(self, settings: Settings):
+        self.path = settings.sms_path
+        self.timezone = settings.timezone
+
+    def read(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def left(self) -> int | None:
+        left = self.read().get("left")
+        return left if isinstance(left, int) else None
+
+    def write(self, left: int, warned: str | None) -> None:
+        try:
+            write_json(self.path, {"left": left, "checked_at": to_iso(now_in(self.timezone)), "warned": warned})
+        except OSError as exc:
+            log.warning("Could not record the text balance (%s)", type(exc).__name__)
+
+
+def _reminder(left: int, low: int, warned: str | None) -> tuple[str | None, str | None]:
+    if left > low:
+        return None, None
+    if left <= 0:
+        return (None, "empty") if warned == "empty" else ("empty", warned)
+    return ("low", None) if warned is None else (None, "low")
+
+
+def _refusal(reply: dict, key: str | None) -> str:
+    reason = re.sub(r"(https?://[^\s?]*)\?\S*", r"\1", str(reply.get("error") or "no reason given"))
+    return (reason.replace(key, REDACTED) if key else reason)[:200]
 
 
 class SmsNotifier:
     name = "sms"
 
-    def __init__(self, settings: Settings, *, retries: int = 2, retry_delay_s: float = 2.0):
+    def __init__(
+        self, settings: Settings, *, email: Notifier | None = None, retries: int = 2, retry_delay_s: float = 2.0
+    ):
         self.settings = settings
+        self.email = email
+        self.balance = TextBalance(settings)
         self.retries = retries
         self.retry_delay_s = retry_delay_s
 
@@ -110,38 +157,74 @@ class SmsNotifier:
             return False
         body = sms_body(message)
         numbers = self.settings.alert_sms_to
-        sent = sum(await asyncio.gather(*(self._send_to(number, body) for number in numbers)))
+        results = await asyncio.gather(*(self._send_to(number, body) for number in numbers))
+        sent = sum(ok for ok, _ in results)
+        left = min((count for _, count in results if count is not None), default=None)
         if sent:
-            log.info("Alert text sent to %d of %d number(s)", sent, len(numbers))
+            more = "" if left is None else f", {left} texts left"
+            log.info("Alert text sent to %d of %d number(s)%s", sent, len(numbers), more)
+        if left is not None:
+            await self._note_balance(left)
         return sent > 0
 
-    async def _send_to(self, number: str, body: str) -> bool:
+    async def check_balance(self) -> int | None:
+        key = urllib.parse.quote(self.settings.textbelt_key or "", safe="")
+        try:
+            reply = await asyncio.to_thread(self._reply, urllib.request.Request(f"{TEXTBELT_URL}/quota/{key}"))
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            log.warning("Could not check the text balance (%s)", type(exc).__name__)
+            return None
+        left = reply.get("quotaRemaining")
+        if reply.get("success") is not True or not isinstance(left, int):
+            log.warning("TextBelt did not give a balance for the key; check TEXTBELT_KEY")
+            return None
+        log.info("Text balance: %d texts left", left)
+        await self._note_balance(left)
+        return left
+
+    async def _note_balance(self, left: int) -> None:
+        due, warned = _reminder(left, self.settings.text_low_balance, self.balance.read().get("warned"))
+        if due is not None:
+            log.warning("%d texts left on the TextBelt key; emailing a top-up reminder", left)
+            if self.email is not None and await self.email.send(balance_message(left, self.settings.textbelt_key)):
+                warned = due
+        self.balance.write(left, warned)
+
+    async def _send_to(self, number: str, body: str) -> tuple[bool, int | None]:
         attempts = self.retries + 1
         for attempt in range(1, attempts + 1):
             try:
-                await asyncio.to_thread(self._post, number, body)
-                return True
+                reply = await asyncio.to_thread(self._post, number, body)
             except urllib.error.HTTPError as exc:
-                log.warning("Alert text refused by Twilio (HTTP %d), attempt %d of %d", exc.code, attempt, attempts)
+                log.warning("Alert text refused by TextBelt (HTTP %d), attempt %d of %d", exc.code, attempt, attempts)
                 if 400 <= exc.code < 500 and exc.code != 429:
-                    return False
-            except OSError as exc:
+                    return False, None
+            except (OSError, ValueError, http.client.HTTPException) as exc:
                 log.warning("Alert text failed (%s), attempt %d of %d", type(exc).__name__, attempt, attempts)
+            else:
+                left = reply.get("quotaRemaining")
+                left = left if isinstance(left, int) else None
+                if reply.get("success") is True:
+                    return True, left
+                log.warning("Alert text refused by TextBelt: %s", _refusal(reply, self.settings.textbelt_key))
+                return False, left
             if attempt < attempts:
                 await asyncio.sleep(self.retry_delay_s)
-        return False
+        return False, None
 
-    def _post(self, number: str, body: str) -> None:
-        s = self.settings
-        sid = s.twilio_account_sid or ""
-        url = f"{TWILIO_API}/Accounts/{urllib.parse.quote(sid, safe='')}/Messages.json"
-        data = urllib.parse.urlencode({"To": number, "From": s.twilio_from or "", "Body": body}).encode()
-        auth = base64.b64encode(f"{sid}:{s.twilio_auth_token or ''}".encode()).decode()
-        request = urllib.request.Request(url, data=data, method="POST")
-        request.add_header("Authorization", f"Basic {auth}")
+    def _post(self, number: str, body: str) -> dict:
+        form = {"phone": number, "message": body, "key": self.settings.textbelt_key or "", "sender": SMS_SENDER}
+        request = urllib.request.Request(f"{TEXTBELT_URL}/text", data=urllib.parse.urlencode(form).encode(), method="POST")
         request.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urllib.request.urlopen(request, timeout=20):
-            pass
+        return self._reply(request)
+
+    @staticmethod
+    def _reply(request: urllib.request.Request) -> dict:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            reply = json.loads(response.read().decode("utf-8"))
+        if not isinstance(reply, dict):
+            raise ValueError("TextBelt sent an unexpected reply")
+        return reply
 
 
 class MultiNotifier:
@@ -163,13 +246,21 @@ class MultiNotifier:
 
 def build_notifier(settings: Settings) -> Notifier:
     notifiers: list[Notifier] = []
-    if settings.email_enabled:
-        notifiers.append(EmailNotifier(settings))
+    email = EmailNotifier(settings) if settings.email_enabled else None
+    if email is not None:
+        notifiers.append(email)
     if settings.sms_enabled:
-        notifiers.append(SmsNotifier(settings))
+        notifiers.append(SmsNotifier(settings, email=email))
     if not notifiers:
         return ConsoleNotifier()
     return notifiers[0] if len(notifiers) == 1 else MultiNotifier(notifiers)
+
+
+async def check_text_balance(notifier: Notifier) -> int | None:
+    for part in notifier.notifiers if isinstance(notifier, MultiNotifier) else [notifier]:
+        if isinstance(part, SmsNotifier):
+            return await part.check_balance()
+    return None
 
 
 def _labels(slots: Iterable[Slot]) -> str:
@@ -341,4 +432,22 @@ def test_message() -> Message:
     return Message(
         "Elisa: test alert",
         "Test alert from the Elisa bot. Real alerts contain only the date and AM/PM of an opening.",
+    )
+
+
+def balance_message(left: int, key: str | None) -> Message:
+    hint = f" (the one ending in {key[-4:]})" if key and len(key) >= 16 else ""
+    top_up = f"To add texts, open {TOP_UP_URL} and top up the bot's TextBelt key{hint}."
+    if left <= 0:
+        return Message(
+            "Elisa: text alerts stopped (no texts left)",
+            f"The bot's TextBelt key has no texts left, so alert texts have stopped. Emails still go out. {top_up} "
+            "Texts start again by themselves after the top-up.",
+            sms=False,
+        )
+    return Message(
+        f"Elisa: text balance low ({left} texts left)",
+        f"The bot's TextBelt key has {left} texts left. When it reaches 0, texts stop; emails still go out. {top_up} "
+        "You'll get this reminder once; another email comes if the texts run out.",
+        sms=False,
     )

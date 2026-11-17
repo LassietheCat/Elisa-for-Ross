@@ -6,8 +6,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-from elisa_bot.__main__ import _monitor_line, main
+from elisa_bot.__main__ import _monitor_line, _text_line, main
 from elisa_bot.config import Settings
+from elisa_bot.notify import TextBalance
 from elisa_bot.service import monitor_ping_error
 
 
@@ -94,6 +95,15 @@ def test_status_reports_whether_the_outside_monitor_is_working(tmp_path):
 
     off.status_path.write_text("not json")
     assert _monitor_line(on) == "on, nothing reported yet"
+
+
+def test_status_reports_the_text_balance(tmp_path):
+    assert _text_line(Settings(data_dir=tmp_path)) == "not set up"
+    on = Settings(data_dir=tmp_path, textbelt_key="k" * 20, alert_sms_to=("+15551112222",))
+    assert _text_line(on) == "on, 1 phone, balance not checked yet"
+    TextBalance(on).write(37, "low")
+    line = _text_line(on)
+    assert line.startswith("on, 1 phone, 37 texts left (checked 20") and line.endswith(")")
 
 
 def test_digest_shows_the_last_seven_days_and_can_email_them(tmp_path, capsys):

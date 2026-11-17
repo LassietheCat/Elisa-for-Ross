@@ -12,7 +12,16 @@ class ConfigError(ValueError):
     pass
 
 
-E164 = re.compile(r"\+[1-9]\d{7,14}")
+US_PHONE = re.compile(r"\+1\d{10}")
+
+
+def us_phone(raw: str) -> str:
+    number = re.sub(r"[\s().-]", "", raw)
+    if re.fullmatch(r"1?\d{10}", number):
+        number = "+1" + number[-10:]
+    if not US_PHONE.fullmatch(number):
+        raise ConfigError(f"{raw!r} must be a US phone number, such as +15551234567")
+    return number
 
 
 SMTP_PRESETS: dict[str, tuple[str, int, bool]] = {
@@ -139,9 +148,8 @@ class Settings:
     smtp_ssl: bool = False
     alert_email_to: tuple[str, ...] = field(default=(), repr=False)
 
-    twilio_account_sid: str | None = field(default=None, repr=False)
-    twilio_auth_token: str | None = field(default=None, repr=False)
-    twilio_from: str | None = field(default=None, repr=False)
+    textbelt_key: str | None = field(default=None, repr=False)
+    text_low_balance: int = 50
     alert_sms_to: tuple[str, ...] = field(default=(), repr=False)
 
     control_password: str | None = field(default=None, repr=False)
@@ -183,11 +191,7 @@ class Settings:
         smtp_ssl = e.boolean("SMTP_SSL", preset_ssl)
         smtp_username = e.text("SMTP_USERNAME")
 
-        sms_to = e.items("ALERT_SMS_TO")
-        twilio_from = e.text("TWILIO_FROM")
-        for number in sms_to if twilio_from is None else (twilio_from, *sms_to):
-            if not E164.fullmatch(number):
-                raise ConfigError(f"{number!r} must be a phone number in E.164 form, such as +15551234567")
+        sms_to = tuple(dict.fromkeys(us_phone(number) for number in e.items("ALERT_SMS_TO")))
 
         return cls(
             base_url=(e.text("ELISA_BASE_URL", cls.base_url) or cls.base_url).rstrip("/"),
@@ -226,9 +230,8 @@ class Settings:
             smtp_starttls=e.boolean("SMTP_STARTTLS", not smtp_ssl),
             smtp_ssl=smtp_ssl,
             alert_email_to=e.items("ALERT_EMAIL_TO"),
-            twilio_account_sid=e.secret("TWILIO_ACCOUNT_SID"),
-            twilio_auth_token=e.secret("TWILIO_AUTH_TOKEN"),
-            twilio_from=twilio_from,
+            textbelt_key=e.secret("TEXTBELT_KEY"),
+            text_low_balance=e.integer("TEXTBELT_LOW_BALANCE", 50, lo=0, hi=100_000),
             alert_sms_to=sms_to,
             control_password=e.secret("CONTROL_PASSWORD"),
             control_secret_key=e.secret("CONTROL_SECRET_KEY"),
@@ -256,6 +259,10 @@ class Settings:
         return self.data_dir / "digest.json"
 
     @property
+    def sms_path(self) -> Path:
+        return self.data_dir / "sms.json"
+
+    @property
     def log_dir(self) -> Path:
         return self.data_dir / "logs"
 
@@ -265,7 +272,7 @@ class Settings:
 
     @property
     def sms_enabled(self) -> bool:
-        return bool(self.twilio_account_sid and self.twilio_auth_token and self.twilio_from and self.alert_sms_to)
+        return bool(self.textbelt_key and self.alert_sms_to)
 
     def clamp_poll(self, seconds: int) -> int:
         return max(self.min_poll_seconds, min(self.max_poll_seconds, int(seconds)))
@@ -275,7 +282,7 @@ class Settings:
             self.elisa_email,
             self.elisa_password,
             self.smtp_password,
-            self.twilio_auth_token,
+            self.textbelt_key,
             self.heartbeat_url,
             self.control_password,
             self.control_secret_key,

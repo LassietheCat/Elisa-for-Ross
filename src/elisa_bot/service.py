@@ -17,7 +17,7 @@ from playwright.async_api import Error as PlaywrightError
 from .config import Settings
 from .cycle import due_landing_month, run_once, target_months
 from .digest import report_week, weekly_digest
-from .notify import Notifier, build_notifier, paused_message, recovered_message, trouble_message
+from .notify import Notifier, build_notifier, check_text_balance, paused_message, recovered_message, trouble_message
 from .site.errors import DataRequestFailed, InvalidCredentials, SignInPaused, SiteBusy, SiteError, VerificationRequired
 from .site.selectors import Selectors
 from .site.session import SignInLimiter, SiteSession
@@ -369,6 +369,7 @@ async def run_forever(
     session: SiteSession | None = None
     switched_on: bool | None = None
     forced: tuple[int, int] | None = None
+    await check_text_balance(notifier)
     log.info("Bot running in %s; waiting for the switch", "test mode" if settings.test_mode else "LIVE mode")
     try:
         while not stop.is_set():

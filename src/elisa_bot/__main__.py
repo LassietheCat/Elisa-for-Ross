@@ -16,7 +16,7 @@ from .digest import weekly_digest
 from .livecheck import SiteCheckReport, run_site_check, site_check_seconds
 from .logging_setup import setup_logging
 from .models import Slot, SlotTags
-from .notify import build_notifier, test_message
+from .notify import TextBalance, build_notifier, test_message
 from .service import monitor_ping_error, run_forever
 from .site.errors import InvalidCredentials, SiteError, VerificationRequired
 from .site.selectors import Selectors, load_selectors
@@ -42,7 +42,7 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("on", help="switch the bot on")
     sub.add_parser("off", help="switch the bot off")
     sub.add_parser("status", help="show the switch and the last check")
-    sub.add_parser("test-email", help="send a test alert")
+    sub.add_parser("test-email", help="send a test alert (email, and a text when texts are set up)")
     sub.add_parser("test-heartbeat", help="ping the outside monitor once")
     digest = sub.add_parser("digest", help="show the weekly report for the last 7 days")
     digest.add_argument("--send", action="store_true", help="also email it now")
@@ -112,6 +112,18 @@ def _print_status(settings: Settings) -> None:
         result = " (ok)" if state.last_run_ok else f" (failed: {state.last_error})"
     print(f"Last check: {state.last_run_at or 'never'}{result}")
     print(f"Outside monitor: {_monitor_line(settings)}")
+    print(f"Text alerts: {_text_line(settings)}")
+
+
+def _text_line(settings: Settings) -> str:
+    if not settings.sms_enabled:
+        return "not set up"
+    phones = len(settings.alert_sms_to)
+    where = f"on, {phones} phone{'' if phones == 1 else 's'}"
+    saved = TextBalance(settings).read()
+    if not isinstance(saved.get("left"), int):
+        return f"{where}, balance not checked yet"
+    return f"{where}, {saved['left']} texts left (checked {saved.get('checked_at')})"
 
 
 def _monitor_line(settings: Settings) -> str:

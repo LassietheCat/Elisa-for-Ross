@@ -11,6 +11,7 @@ safety rules are in [README.md](README.md); the client's summary is
 | Server | Henry's Contabo VPS `207.244.242.218` (Ubuntu 24.04.5, 12 vCPUs, 47 GB), installed Oct 14 by this runbook |
 | Bot | On since Oct 14, 19:13, a calendar read every 60 s since Oct 18, quick checks every 30 s since Oct 23 (the open-order list since Oct 26); **live** (`TEST_MODE=false`) since Oct 16, 13:54 (the previous settings are in `/etc/elisa-bot/env.before-live`) |
 | Alerts | From "Elisa Bot" <anya-alerts@agentmail.to> to Henry, Anya and Ross (`ALERT_EMAIL_TO`) |
+| Text alerts | TextBelt, to Anya's cell (`ALERT_SMS_TO`), since Nov 17, 15:33; the key is in `/etc/elisa-bot/secrets/textbelt_key`, and a reminder email goes out at 50 texts left |
 | Logins | `root` by SSH key from Ross's development machine; Henry's root password (to be changed, since it was sent by message) |
 | On/off page | `https://anya-elisa.duckdns.org` (DuckDNS name made by Ross; Caddy with a Let's Encrypt certificate and HSTS, in front of 127.0.0.1:8080) |
 
@@ -154,27 +155,42 @@ Optional, and separate from email. Texts go out only for the urgent alerts — a
 or clicked-but-unconfirmed, the bot switching itself off, checks failing, checks working
 again, and the test alert. Missed, skipped and day-off notices stay email-only.
 
-1. At console.twilio.com, buy an SMS-capable number and copy the Account SID and an Auth Token.
-2. Register that number for **A2P 10DLC** (Messaging → Regulatory Compliance). US carriers
-   drop unregistered traffic. Allow 1–3 weeks; do this first if texts are wanted by a date.
-3. Put the token in `/etc/elisa-bot/secrets/twilio_auth_token` (root:elisa, 640), then in
-   `/etc/elisa-bot/env`:
+They go through TextBelt (https://textbelt.com): a key bought on its purchase page holds a
+balance of texts. There is no account, sending number or carrier registration to set up.
 
-```
-TWILIO_ACCOUNT_SID=AC...
-TWILIO_AUTH_TOKEN_FILE=/etc/elisa-bot/secrets/twilio_auth_token
-TWILIO_FROM=+1XXXXXXXXXX
-ALERT_SMS_TO=+1XXXXXXXXXX,+1XXXXXXXXXX
-```
+1. Put the key in `/etc/elisa-bot/secrets/textbelt_key` (root:elisa, 640) without it ever
+   showing on screen. From a machine that can SSH to the server:
 
-4. `sudo systemctl restart elisa-bot elisa-control`, then press **Send test alert** on the
-   page. It sends the email and the text together.
+   ```bash
+   read -rsp 'TextBelt key: ' K; echo; printf '%s\n' "$K" | ssh root@SERVER 'umask 027; cat > /etc/elisa-bot/secrets/textbelt_key && chown root:elisa /etc/elisa-bot/secrets/textbelt_key'; unset K
+   ```
 
-Every number must be in E.164 form (`+15551234567`); the bot refuses to start otherwise, so a
-typo shows up at restart rather than silently never texting. The on/off page's top card shows
-`Text alerts: on · N phones` once it is working. Texts are trimmed to 320 characters. If email
-arrives but no text does, check the Twilio console's Messaging logs for the per-message
-`error_code`; a number that is not yet A2P-registered is the usual cause.
+2. In `/etc/elisa-bot/env`:
+
+   ```
+   TEXTBELT_KEY_FILE=/etc/elisa-bot/secrets/textbelt_key
+   ALERT_SMS_TO=+1XXXXXXXXXX
+   ```
+
+   `ALERT_SMS_TO` takes US numbers, comma-separated. `TEXTBELT_LOW_BALANCE` (default 50)
+   sets when the top-up reminder is emailed.
+
+3. `sudo systemctl restart elisa-bot elisa-control`. Within seconds the log shows
+   `Text balance: N texts left`, and the page's top card shows
+   `Text alerts: on · N phones · N texts left`.
+4. Press **Send test alert** on the page. It sends the email and the text together (one
+   text per phone, taken from the balance).
+
+**Topping up:** when the "text balance low" email arrives, open
+https://textbelt.com/purchase/ and add texts to the same key (the email names its last four
+characters). Nothing changes on the server: texts carry on, or start again by themselves if
+they had stopped, and the page shows the new balance after the next text or restart.
+
+If email arrives but no text does, look for `Alert text refused by TextBelt: <reason>` or
+`Alert text failed` in `journalctl -u elisa-bot`. "Out of quota" means the balance is used
+up; an internet number (Google Voice and the like) is the other usual cause. "Ability to
+send URLs" means TextBelt took a text for a link; texts are kept to the subject line, with
+no full stops, slashes or colons, so that it doesn't.
 
 ## First start
 
@@ -239,6 +255,8 @@ when Elisa lists a new open work order or refuses one.
 | Refused | Elisa answered the Accept with a refusal; nothing was booked. The log line "Elisa refused the Accept" has a summary of Elisa's message (generic words only) and a fingerprint. | Nothing; send the developer the log line if it repeats. |
 | Opening seen but Accept could not be tried | The work-order window or its Accept button wasn't found. Nothing was clicked; the bot retries once. | Look at Elisa; if it repeats, the desktop Accept step differs from what the bot expects (developer). |
 | Bot may be missing openings | A calendar tag couldn't be read. | Check Open Work Orders by hand; send the developer the log lines (see below). |
+| Text balance low | The TextBelt key is down to 50 texts (`TEXTBELT_LOW_BALANCE`); sent once. | Top up the same key at https://textbelt.com/purchase/ (see [Text alerts](#text-alerts)). |
+| Text alerts stopped (no texts left) | The TextBelt key is used up. Emails still go out. | Top up the same key; texts start again by themselves. |
 | Applied, test mode, missed, skipped, working again | Normal. | Nothing. |
 
 ## When something is wrong

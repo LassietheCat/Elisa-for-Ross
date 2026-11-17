@@ -797,7 +797,7 @@ async def test_the_running_bot_sends_the_weekly_report_between_checks(mock, tmp_
 async def test_no_weekly_report_when_only_texts_are_set_up(tmp_path):
     settings = dataclasses.replace(
         Settings(data_dir=tmp_path),
-        twilio_account_sid="AC" + "0" * 32, twilio_auth_token="token", twilio_from="+15550000000", alert_sms_to=("+15551112222",),
+        textbelt_key="textbelt-key", alert_sms_to=("+15551112222",),
     )
     digest = service.WeeklyDigest(settings, Capture(), lambda: dt.datetime(2026, 11, 16, 9, 0, tzinfo=NY))
     digest.tick()

@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTex
 
 from .config import Settings
 from .models import Half, Slot
-from .notify import Notifier, build_notifier, test_message
+from .notify import Notifier, TextBalance, build_notifier, test_message
 from .state import BotState, ControlState, ControlStore, MAX_JOBS_PER_DAY, MAX_NOTICE_MINUTES, SERVICE_TYPES, StateStore, off_entries
 from .timeutil import now_in
 
@@ -394,7 +394,13 @@ def _hero_card(
 
     phones = len(settings.alert_sms_to)
     if settings.sms_enabled:
-        info.append(f'<div class="ir">Text alerts: on · <b>{phones} phone{"" if phones == 1 else "s"}</b></div>')
+        left = TextBalance(settings).left()
+        low = left is not None and left <= settings.text_low_balance
+        style = ' style="color:var(--stop-t)"' if low else ""
+        balance = "" if left is None else f" · {left} texts left"
+        info.append(
+            f'<div class="ir"{style}>Text alerts: on · <b>{phones} phone{"" if phones == 1 else "s"}</b>{balance}</div>'
+        )
     else:
         info.append('<div class="ir">Text alerts: not configured</div>')
 

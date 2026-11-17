@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from elisa_bot.config import ConfigError, Settings
-from elisa_bot.notify import Message
+from elisa_bot.notify import Message, TextBalance
 from elisa_bot.state import BotState, ControlStore, StateStore
 from elisa_bot.web import COOKIE, create_control_app
 
@@ -342,17 +342,20 @@ def test_the_page_says_whether_text_alerts_are_on(tmp_path):
     _, client, _ = make(tmp_path)
     sign_in(client)
     assert "Text alerts: not configured" in client.get("/").text
-    _, client, _ = make(
+    settings, client, _ = make(
         tmp_path / "sms",
-        twilio_account_sid="AC" + "0" * 30,
-        twilio_auth_token="twilio-secret-value",
-        twilio_from="+15550000000",
+        textbelt_key="textbelt-secret-value",
         alert_sms_to=("+15551112222", "+15553334444"),
     )
     sign_in(client)
     page = client.get("/").text
-    assert "Text alerts: on" in page and "2 phones" in page
-    assert "+15551112222" not in page
+    assert '<div class="ir">Text alerts: on · <b>2 phones</b></div>' in page
+    TextBalance(settings).write(120, None)
+    assert '<div class="ir">Text alerts: on · <b>2 phones</b> · 120 texts left</div>' in client.get("/").text
+    TextBalance(settings).write(37, "low")
+    page = client.get("/").text
+    assert '<div class="ir" style="color:var(--stop-t)">Text alerts: on · <b>2 phones</b> · 37 texts left</div>' in page
+    assert "+15551112222" not in page and "textbelt-secret-value" not in page
 
 
 def test_the_calendar_check_shows_in_recent_activity_and_a_settled_job_counts_as_accepted(tmp_path):

@@ -262,28 +262,45 @@ alerts are configured; everything is emailed either way:
 | Bot may be missing openings | a calendar tag can't be read | always | yes |
 | Test alert | the page's button or `test-email` | — | yes |
 | Weekly report | Mondays at 8 AM: the past week's openings, accepts, rule skips, speed and watching time | `WEEKLY_DIGEST` | no |
+| Text balance low, then text alerts stopped | the TextBelt key is down to `TEXTBELT_LOW_BALANCE` texts, then out (once each) | `TEXTBELT_LOW_BALANCE` | no |
 
 ### Text (SMS) alerts
 
 Off unless configured. Texts carry the urgent alerts only, so the phone doesn't buzz for
-every missed or skipped opening. They go through Twilio:
+every missed or skipped opening. They go through [TextBelt](https://textbelt.com), a
+prepaid texting service: no account, no sending number and no carrier registration, just
+a key holding a balance of texts.
 
 ```
-TWILIO_ACCOUNT_SID=AC...
-TWILIO_AUTH_TOKEN=<auth token, or TWILIO_AUTH_TOKEN_FILE=...>
-TWILIO_FROM=+15550000000
-ALERT_SMS_TO=+15551112222,+15553334444
+TEXTBELT_KEY_FILE=/etc/elisa-bot/secrets/textbelt_key
+ALERT_SMS_TO=+15551112222
+TEXTBELT_LOW_BALANCE=50
 ```
 
-All four are needed before any text is sent; the on/off page's top card says
-`Text alerts: on · N phones` once they are. Numbers must be E.164 (`+15551234567`) or the
-bot refuses to start. Text bodies carry the same wording as the email, prefixed
-`Elisa bot:` and trimmed to 320 characters; like the emails they hold only the date and
-AM/PM of an opening.
+The key and at least one number are both needed before any text is sent; the on/off
+page's top card then says `Text alerts: on · N phones · N texts left`. Numbers must be US
+numbers and are stored as `+1` and ten digits, so `(555) 111-2222` and `555-111-2222`
+work too; anything else stops the bot at startup with a clear message. A text is the
+alert's subject line, such as `Elisa bot - applied Wed Oct 14 AM`, so it always fits in one
+text; the email has the details. Like the emails, texts hold only the date and AM/PM of an
+opening. TextBelt refuses any text it takes for a link unless the key is approved for
+links, and it took the test alert's plain sentences for one, so texts carry no full stops,
+slashes or colons.
 
-US numbers need **A2P 10DLC** registration in the Twilio console before carriers deliver
-reliably — that takes about 1–3 weeks, so start it early. Email and text are sent at the
-same time and independently: if one channel is down the other still goes out.
+**Balance.** Every text TextBelt accepts uses one from the key's balance, even one a
+phone never receives; a text it refuses costs nothing. The bot reads the balance after each text and once at
+startup (TextBelt's quota lookup, which sends nothing), keeps it in `DATA_DIR/sms.json`
+and shows it on the page and in `elisa-bot status`. When it drops to
+`TEXTBELT_LOW_BALANCE` (default 50) the bot emails one top-up reminder with the link
+https://textbelt.com/purchase/ and the key's last four characters, never the whole key.
+At 0 it emails once more ("text alerts stopped"). A top-up above the level re-arms the
+reminder. In a busy week (Nov 9–15) about 20 alerts would have been texted, so 50 texts
+last about two weeks per phone.
+
+TextBelt sends from a shared pool of numbers, so texts arrive from changing numbers, and
+the first text to each phone also carries "Reply STOP to unsubscribe". It can't text
+internet numbers (Google Voice and the like). Email and text are sent at the same time
+and independently: if one channel is down the other still goes out.
 
 Exit codes: `0` ok, `1` run failed (or `site-check` found something to fix), `2`
 configuration error, `3` the site rejected the sign-in (not retried; fix the
